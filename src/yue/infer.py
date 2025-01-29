@@ -19,8 +19,6 @@ from omegaconf import OmegaConf
 from post_process_audio import replace_low_freq_with_energy_matched
 from torchaudio.transforms import Resample
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, LogitsProcessor, LogitsProcessorList
-from transformers.cache_utils import StaticCache
 from vocoder import build_codec_model, process_audio
 
 parser = argparse.ArgumentParser()
@@ -92,9 +90,9 @@ exl2_config = ExLlamaV2Config(stage1_model)
 model = ExLlamaV2(exl2_config)
 tokenizer = ExLlamaV2Tokenizer(exl2_config)
 model.load()
-cache = ExLlamaV2Cache(model, batch_size=1, max_seq_len=16384)
+cache = ExLlamaV2Cache(model, max_seq_len=16384)
 generator = ExLlamaV2DynamicGenerator(model, cache, tokenizer, max_batch_size=1, paged=False)
-gen_settings = ExLlamaV2Sampler.Settings()
+gen_settings = ExLlamaV2Sampler.Settings(top_k=0)
 gen_settings.disallow_tokens(tokenizer, list(range(0, 32002)) + [32016])
 
 codectool = CodecManipulator("xcodec", 0, 1)
@@ -106,15 +104,6 @@ parameter_dict = torch.load(args.resume_path, map_location="cpu")
 codec_model.load_state_dict(parameter_dict["codec_model"])
 codec_model.to(device)
 codec_model.eval()
-
-
-class BlockTokenRangeProcessor(LogitsProcessor):
-    def __init__(self, start_id, end_id):
-        self.blocked_token_ids = list(range(start_id, end_id))
-
-    def __call__(self, input_ids, scores):
-        scores[:, self.blocked_token_ids] = -float("inf")
-        return scores
 
 
 def load_audio_mono(filepath, sampling_rate=16000):
@@ -271,9 +260,14 @@ if not args.disable_offload_model:
     torch.cuda.empty_cache()
 
 print("Stage 2 inference...")
-model_stage2 = AutoModelForCausalLM.from_pretrained(stage2_model, torch_dtype=torch.float16, attn_implementation="sdpa")
-model_stage2.to(device)
-model_stage2.eval()
+exl2_config = ExLlamaV2Config(stage2_model)
+model = ExLlamaV2(exl2_config)
+tokenizer = ExLlamaV2Tokenizer(exl2_config)
+model.load()
+cache = ExLlamaV2Cache(model, max_seq_len=8192)
+generator = ExLlamaV2DynamicGenerator(model, cache, tokenizer, paged=False)
+gen_settings = ExLlamaV2Sampler.Settings(top_k=0)
+gen_settings.disallow_tokens(tokenizer, list(range(0, 46358)) + list(range(53526, mmtokenizer.vocab_size)))
 
 
 def stage2_generate(model, prompt, batch_size=16):
@@ -312,40 +306,32 @@ def stage2_generate(model, prompt, batch_size=16):
         ).astype(np.int32)
         prompt_ids = prompt_ids[np.newaxis, ...]
 
-    codec_ids = torch.as_tensor(codec_ids).to(device)
-    prompt_ids = torch.as_tensor(prompt_ids).to(device)
+    codec_ids = torch.as_tensor(codec_ids)
+    prompt_ids = torch.as_tensor(prompt_ids)
     len_prompt = prompt_ids.shape[-1]
 
-    block_list = LogitsProcessorList(
-        [
-            BlockTokenRangeProcessor(0, 46358),
-            BlockTokenRangeProcessor(53526, mmtokenizer.vocab_size),
-        ]
-    )
-
     # Teacher forcing generate loop
-    past_key_values = StaticCache(
-        model.config,
-        max_batch_size=batch_size,
-        max_cache_len=prompt_ids.shape[1] + codec_ids.shape[1] * 8,
-        device=model.device,
-        dtype=model.dtype,
-    )
     for frames_idx in range(codec_ids.shape[1]):
         cb0 = codec_ids[:, frames_idx : frames_idx + 1]
         prompt_ids = torch.cat([prompt_ids, cb0], dim=1)
         input_ids = prompt_ids
 
         with torch.no_grad():
-            stage2_output = model.generate(
-                input_ids=input_ids,
-                min_new_tokens=7,
-                max_new_tokens=7,
-                eos_token_id=mmtokenizer.eoa,
-                pad_token_id=mmtokenizer.eoa,
-                logits_processor=block_list,
-                past_key_values=past_key_values,
-            )
+            split_ids = list(input_ids.split(1, dim=0))
+            stage2_output = split_ids
+            for idx, input_id in enumerate(input_ids):
+                job = ExLlamaV2DynamicJob(input_ids=input_id.unsqueeze(0), min_new_tokens=7, max_new_tokens=7, gen_settings=gen_settings, identifier=idx)
+                generator.enqueue(job)
+            while generator.num_remaining_jobs():
+                results = generator.iterate()
+                for result in results:
+                    if result["stage"] != "streaming":
+                        continue
+                    new_token_ids = result.get("token_ids", None)
+                    if new_token_ids is not None:
+                        idx = result["identifier"]
+                        stage2_output[idx] = torch.cat((stage2_output[idx], new_token_ids), dim=-1)
+            stage2_output = torch.cat(stage2_output, dim=0)
 
         assert stage2_output.shape[1] - prompt_ids.shape[1] == 7, f"output new tokens={stage2_output.shape[1]-prompt_ids.shape[1]}"
         prompt_ids = stage2_output
@@ -417,7 +403,7 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
     return stage2_result
 
 
-stage2_result = stage2_inference(model_stage2, stage1_output_set, stage2_output_dir, batch_size=args.stage2_batch_size)
+stage2_result = stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=args.stage2_batch_size)
 print(stage2_result)
 print("Stage 2 DONE.\n")
 
