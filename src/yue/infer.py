@@ -298,8 +298,12 @@ stage1_output_set.append(inst_save_path)
 # offload model
 if not args.disable_offload_model:
     if stage1_use_exl2:
+        model.unload()
+        del gen_settings
+        del generator
         del cache
         del model
+        del exl2_config
     else:
         del past_key_values
         del model
@@ -478,8 +482,12 @@ print("Stage 2 DONE.\n")
 
 if not args.disable_offload_model:
     if stage2_use_exl2:
+        model.unload()
+        del gen_settings
+        del generator
         del cache
         del model
+        del exl2_config
     else:
         del model
     torch.cuda.empty_cache()
