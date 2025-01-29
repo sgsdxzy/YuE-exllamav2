@@ -19,7 +19,13 @@ from omegaconf import OmegaConf
 from post_process_audio import replace_low_freq_with_energy_matched
 from torchaudio.transforms import Resample
 from tqdm import tqdm
+from transformers import AutoModelForCausalLM, LogitsProcessor, LogitsProcessorList
+from transformers.cache_utils import StaticCache
 from vocoder import build_codec_model, process_audio
+
+# enable inference mode globally
+torch.autograd.grad_mode._enter_inference_mode(True)
+torch.autograd.set_grad_enabled(False)
 
 parser = argparse.ArgumentParser()
 # Model Configuration:
@@ -27,7 +33,10 @@ parser.add_argument("--stage1_model", type=str, default="m-a-p/YuE-s1-7B-anneal-
 parser.add_argument("--stage2_model", type=str, default="m-a-p/YuE-s2-1B-general", help="The model checkpoint path or identifier for the Stage 2 model.")
 parser.add_argument("--max_new_tokens", type=int, default=3000, help="The maximum number of new tokens to generate in one pass during text generation.")
 parser.add_argument("--run_n_segments", type=int, default=2, help="The number of segments to process during the generation.")
-parser.add_argument("--stage2_batch_size", type=int, default=4, help="The batch size used in Stage 2 inference.")
+parser.add_argument("--stage1_use_exl2", action="store_true", help="Use exllamav2 to load and run stage 1 model.")
+parser.add_argument("--stage2_use_exl2", action="store_true", help="Use exllamav2 to load and run stage 2 model.")
+parser.add_argument("--stage2_batch_size", type=int, default=4, help="The non-exl2 batch size used in Stage 2 inference.")
+parser.add_argument("--stage2_cache_size", type=int, default=8192, help="The exl2 cache size used in Stage 2 inference.")
 # Prompt
 parser.add_argument(
     "--genre_txt",
@@ -70,6 +79,8 @@ if args.use_audio_prompt and not args.audio_prompt_path:
     raise FileNotFoundError("Please offer audio prompt filepath using '--audio_prompt_path', when you enable 'use_audio_prompt'!")
 stage1_model = args.stage1_model
 stage2_model = args.stage2_model
+stage1_use_exl2 = args.stage1_use_exl2
+stage2_use_exl2 = args.stage2_use_exl2
 cuda_idx = args.cuda_idx
 max_new_tokens = args.max_new_tokens
 stage1_output_dir = os.path.join(args.output_dir, f"stage1")
@@ -86,24 +97,37 @@ mmtokenizer = _MMSentencePieceTokenizer(
         "tokenizer.model",
     )
 )
-exl2_config = ExLlamaV2Config(stage1_model)
-model = ExLlamaV2(exl2_config)
-tokenizer = ExLlamaV2Tokenizer(exl2_config)
-model.load()
-cache = ExLlamaV2Cache(model, max_seq_len=16384)
-generator = ExLlamaV2DynamicGenerator(model, cache, tokenizer, max_batch_size=1, paged=False)
-gen_settings = ExLlamaV2Sampler.Settings(top_k=0)
-gen_settings.disallow_tokens(tokenizer, list(range(0, 32002)) + [32016])
+if stage1_use_exl2:
+    exl2_config = ExLlamaV2Config(stage1_model)
+    model = ExLlamaV2(exl2_config)
+    tokenizer = ExLlamaV2Tokenizer(exl2_config)
+    model.load()
+    cache = ExLlamaV2Cache(model, max_seq_len=16384)
+    generator = ExLlamaV2DynamicGenerator(model, cache, tokenizer, max_batch_size=1, paged=False)
+    gen_settings = ExLlamaV2Sampler.Settings(top_k=0)
+    gen_settings.disallow_tokens(tokenizer, list(range(0, 32002)) + [32016])
+else:
+    model = AutoModelForCausalLM.from_pretrained(stage1_model, torch_dtype=torch.float16, attn_implementation="sdpa")
+    model.to(device)
+    model.eval()
 
 codectool = CodecManipulator("xcodec", 0, 1)
 codectool_stage2 = CodecManipulator("xcodec", 0, 8)
 model_config = OmegaConf.load(args.basic_model_config)
 assert model_config.generator.name == "SoundStream"
 codec_model = SoundStream(**model_config.generator.config).to(device)
-parameter_dict = torch.load(args.resume_path, map_location="cpu")
+parameter_dict = torch.load(args.resume_path, map_location=device, weights_only=False)
 codec_model.load_state_dict(parameter_dict["codec_model"])
-codec_model.to(device)
 codec_model.eval()
+
+
+class BlockTokenRangeProcessor(LogitsProcessor):
+    def __init__(self, start_id, end_id):
+        self.blocked_token_ids = list(range(start_id, end_id))
+
+    def __call__(self, input_ids, scores):
+        scores[:, self.blocked_token_ids] = -float("inf")
+        return scores
 
 
 def load_audio_mono(filepath, sampling_rate=16000):
@@ -159,8 +183,7 @@ for i, p in enumerate(tqdm(prompt_texts[:run_n_segments])):
         if args.use_audio_prompt:
             audio_prompt = load_audio_mono(args.audio_prompt_path)
             audio_prompt.unsqueeze_(0)
-            with torch.no_grad():
-                raw_codes = codec_model.encode(audio_prompt.to(device), target_bw=0.5)
+            raw_codes = codec_model.encode(audio_prompt.to(device), target_bw=0.5)
             raw_codes = raw_codes.transpose(0, 1)
             raw_codes = raw_codes.cpu().numpy().astype(np.int16)
             # Format audio prompt
@@ -182,11 +205,13 @@ for i, p in enumerate(tqdm(prompt_texts[:run_n_segments])):
     if input_ids.shape[-1] > max_context:
         print(f"Section {i}: output length {input_ids.shape[-1]} exceeding context length {max_context}, now using the last {max_context} tokens.")
         input_ids = input_ids[:, -(max_context):]
-    with torch.no_grad():
+
+    if stage1_use_exl2:
         gen_settings.top_k = 0
         gen_settings.top_p = top_p
         gen_settings.temperature = temperature
         gen_settings.token_presence_penalty = repetition_penalty
+        # TODO: guidance_scale
 
         job = ExLlamaV2DynamicJob(
             input_ids=input_ids,
@@ -205,10 +230,30 @@ for i, p in enumerate(tqdm(prompt_texts[:run_n_segments])):
                 new_token_ids = result.get("token_ids", None)
                 if new_token_ids is not None:
                     output_seq = torch.cat((output_seq, new_token_ids), dim=-1)
+    else:
+        prompt_ids = prompt_ids.to(device)
+        input_ids = input_ids.to(device)
+        past_key_values = StaticCache(
+            model.config, max_batch_size=1, max_cache_len=input_ids.shape[-1] + max_new_tokens, device=model.device, dtype=model.dtype
+        )
+        output_seq = model.generate(
+            input_ids=input_ids,
+            max_new_tokens=max_new_tokens,
+            min_new_tokens=100,
+            do_sample=True,
+            top_p=top_p,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            eos_token_id=mmtokenizer.eoa,
+            pad_token_id=mmtokenizer.eoa,
+            logits_processor=LogitsProcessorList([BlockTokenRangeProcessor(0, 32002), BlockTokenRangeProcessor(32016, 32016)]),
+            guidance_scale=guidance_scale,
+            past_key_values=past_key_values,
+        )
 
-        if output_seq[0][-1].item() != mmtokenizer.eoa:
-            tensor_eoa = torch.tensor([[mmtokenizer.eoa]], dtype=torch.long)
-            output_seq = torch.cat((output_seq, tensor_eoa), dim=1)
+    if output_seq[0][-1].item() != mmtokenizer.eoa:
+        tensor_eoa = torch.tensor([[mmtokenizer.eoa]], dtype=torch.long, device=output_seq.device)
+        output_seq = torch.cat((output_seq, tensor_eoa), dim=1)
     if i > 1:
         raw_output = torch.cat([raw_output, prompt_ids, output_seq[:, input_ids.shape[-1] :]], dim=1)
     else:
@@ -252,22 +297,28 @@ stage1_output_set.append(inst_save_path)
 
 # offload model
 if not args.disable_offload_model:
-    del generator
-    del cache
-    del tokenizer
-    del model
-    del exl2_config
+    if stage1_use_exl2:
+        del cache
+        del model
+    else:
+        del past_key_values
+        del model
     torch.cuda.empty_cache()
 
 print("Stage 2 inference...")
-exl2_config = ExLlamaV2Config(stage2_model)
-model = ExLlamaV2(exl2_config)
-tokenizer = ExLlamaV2Tokenizer(exl2_config)
-model.load()
-cache = ExLlamaV2Cache(model, max_seq_len=8192)
-generator = ExLlamaV2DynamicGenerator(model, cache, tokenizer, paged=False)
-gen_settings = ExLlamaV2Sampler.Settings(top_k=0)
-gen_settings.disallow_tokens(tokenizer, list(range(0, 46358)) + list(range(53526, mmtokenizer.vocab_size)))
+if stage2_use_exl2:
+    exl2_config = ExLlamaV2Config(stage2_model)
+    model = ExLlamaV2(exl2_config)
+    tokenizer = ExLlamaV2Tokenizer(exl2_config)
+    model.load()
+    cache = ExLlamaV2Cache(model, max_seq_len=args.stage2_cache_size)
+    generator = ExLlamaV2DynamicGenerator(model, cache, tokenizer)
+    gen_settings = ExLlamaV2Sampler.Settings(top_k=0)
+    gen_settings.disallow_tokens(tokenizer, list(range(0, 46358)) + list(range(53526, mmtokenizer.vocab_size)))
+else:
+    model = AutoModelForCausalLM.from_pretrained(stage2_model, torch_dtype=torch.float16, attn_implementation="sdpa")
+    model.to(device)
+    model.eval()
 
 
 def stage2_generate(model, prompt, batch_size=16):
@@ -311,12 +362,19 @@ def stage2_generate(model, prompt, batch_size=16):
     len_prompt = prompt_ids.shape[-1]
 
     # Teacher forcing generate loop
+    if not stage2_use_exl2:
+        codec_ids = codec_ids.to(device)
+        prompt_ids = prompt_ids.to(device)
+        block_list = LogitsProcessorList([BlockTokenRangeProcessor(0, 46358), BlockTokenRangeProcessor(53526, mmtokenizer.vocab_size)])
+        past_key_values = StaticCache(
+            model.config, max_batch_size=batch_size, max_cache_len=prompt_ids.shape[1] + codec_ids.shape[1] * 8, device=model.device, dtype=model.dtype
+        )
     for frames_idx in range(codec_ids.shape[1]):
         cb0 = codec_ids[:, frames_idx : frames_idx + 1]
         prompt_ids = torch.cat([prompt_ids, cb0], dim=1)
         input_ids = prompt_ids
 
-        with torch.no_grad():
+        if stage2_use_exl2:
             split_ids = list(input_ids.split(1, dim=0))
             stage2_output = split_ids
             for idx, input_id in enumerate(input_ids):
@@ -332,6 +390,16 @@ def stage2_generate(model, prompt, batch_size=16):
                         idx = result["identifier"]
                         stage2_output[idx] = torch.cat((stage2_output[idx], new_token_ids), dim=-1)
             stage2_output = torch.cat(stage2_output, dim=0)
+        else:
+            stage2_output = model.generate(
+                input_ids=input_ids,
+                min_new_tokens=7,
+                max_new_tokens=7,
+                eos_token_id=mmtokenizer.eoa,
+                pad_token_id=mmtokenizer.eoa,
+                logits_processor=block_list,
+                past_key_values=past_key_values,
+            )
 
         assert stage2_output.shape[1] - prompt_ids.shape[1] == 7, f"output new tokens={stage2_output.shape[1]-prompt_ids.shape[1]}"
         prompt_ids = stage2_output
@@ -354,6 +422,7 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
 
         if os.path.exists(output_filename):
             print(f"{output_filename} stage2 has done.")
+            stage2_result.append(output_filename)
             continue
 
         # Load the prompt
@@ -363,7 +432,7 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
         output_duration = prompt.shape[-1] // 50 // 6 * 6
         num_batch = output_duration // 6
 
-        if num_batch <= batch_size:
+        if num_batch <= batch_size or stage2_use_exl2:
             # If num_batch is less than or equal to batch_size, we can infer the entire prompt at once
             output = stage2_generate(model, prompt[:, : output_duration * 50], batch_size=num_batch)
         else:
@@ -407,6 +476,14 @@ stage2_result = stage2_inference(model, stage1_output_set, stage2_output_dir, ba
 print(stage2_result)
 print("Stage 2 DONE.\n")
 
+if not args.disable_offload_model:
+    if stage2_use_exl2:
+        del cache
+        del model
+    else:
+        del model
+    torch.cuda.empty_cache()
+
 
 # convert audio tokens to audio
 def save_audio(wav: torch.Tensor, path, sample_rate: int, rescale: bool = False):
@@ -427,8 +504,7 @@ tracks = []
 for npy in stage2_result:
     codec_result = np.load(npy)
     decodec_rlt = []
-    with torch.no_grad():
-        decoded_waveform = codec_model.decode(torch.as_tensor(codec_result.astype(np.int16), dtype=torch.long).unsqueeze(0).permute(1, 0, 2).to(device))
+    decoded_waveform = codec_model.decode(torch.as_tensor(codec_result.astype(np.int16), dtype=torch.long).unsqueeze(0).permute(1, 0, 2).to(device))
     decoded_waveform = decoded_waveform.cpu().squeeze(0)
     decodec_rlt.append(torch.as_tensor(decoded_waveform))
     decodec_rlt = torch.cat(decodec_rlt, dim=-1)
