@@ -382,7 +382,7 @@ def stage2_generate(model, prompt, batch_size=16):
             split_ids = list(input_ids.split(1, dim=0))
             stage2_output = split_ids
             for idx, input_id in enumerate(input_ids):
-                job = ExLlamaV2DynamicJob(input_ids=input_id.unsqueeze(0), min_new_tokens=7, max_new_tokens=7, gen_settings=gen_settings, identifier=idx)
+                job = ExLlamaV2DynamicJob(input_ids=input_id.unsqueeze(0).long(), min_new_tokens=7, max_new_tokens=7, gen_settings=gen_settings, identifier=idx)
                 generator.enqueue(job)
             while generator.num_remaining_jobs():
                 results = generator.iterate()
