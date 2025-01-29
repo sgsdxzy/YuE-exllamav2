@@ -317,7 +317,7 @@ if stage2_use_exl2:
     model.load()
     cache = ExLlamaV2Cache(model, max_seq_len=args.stage2_cache_size)
     generator = ExLlamaV2DynamicGenerator(model, cache, tokenizer)
-    gen_settings = ExLlamaV2Sampler.Settings(top_k=0)
+    gen_settings = ExLlamaV2Sampler.Settings(top_k=1)
     gen_settings.disallow_tokens(tokenizer, list(range(0, 46358)) + list(range(53526, mmtokenizer.vocab_size)))
 else:
     model = AutoModelForCausalLM.from_pretrained(stage2_model, torch_dtype=torch.float16, attn_implementation="sdpa")
