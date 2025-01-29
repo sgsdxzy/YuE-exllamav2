@@ -2,7 +2,6 @@ import argparse
 import copy
 import os
 import re
-import sys
 import uuid
 from collections import Counter
 
@@ -13,13 +12,14 @@ import torchaudio
 from codecmanipulator import CodecManipulator
 from einops import rearrange
 from mmtokenizer import _MMSentencePieceTokenizer
+from models.soundstream_hubert_new import SoundStream
 from omegaconf import OmegaConf
 from post_process_audio import replace_low_freq_with_energy_matched
 from torchaudio.transforms import Resample
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, LogitsProcessor, LogitsProcessorList
+from transformers.cache_utils import StaticCache
 from vocoder import build_codec_model, process_audio
-
 
 parser = argparse.ArgumentParser()
 # Model Configuration:
@@ -157,11 +157,17 @@ os.makedirs(stage2_output_dir, exist_ok=True)
 
 # load tokenizer and model
 device = torch.device(f"cuda:{cuda_idx}" if torch.cuda.is_available() else "cpu")
-mmtokenizer = _MMSentencePieceTokenizer("./mm_tokenizer_v0.2_hf/tokenizer.model")
+mmtokenizer = _MMSentencePieceTokenizer(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "mm_tokenizer_v0.2_hf",
+        "tokenizer.model",
+    )
+)
 model = AutoModelForCausalLM.from_pretrained(
     stage1_model,
-    torch_dtype=torch.bfloat16,
-    attn_implementation="flash_attention_2",  # To enable flashattn, you have to install flash-attn
+    torch_dtype=torch.float16,
+    attn_implementation="sdpa",  # To enable flashattn, you have to install flash-attn
 )
 # to device, if gpu is available
 model.to(device)
@@ -170,9 +176,8 @@ model.eval()
 codectool = CodecManipulator("xcodec", 0, 1)
 codectool_stage2 = CodecManipulator("xcodec", 0, 8)
 model_config = OmegaConf.load(args.basic_model_config)
-codec_model = eval(model_config.generator.name)(**model_config.generator.config).to(
-    device
-)
+assert model_config.generator.name == "SoundStream"
+codec_model = SoundStream(**model_config.generator.config).to(device)
 parameter_dict = torch.load(args.resume_path, map_location="cpu")
 codec_model.load_state_dict(parameter_dict["codec_model"])
 codec_model.to(device)
@@ -371,7 +376,7 @@ if not args.disable_offload_model:
 
 print("Stage 2 inference...")
 model_stage2 = AutoModelForCausalLM.from_pretrained(
-    stage2_model, torch_dtype=torch.float16, attn_implementation="flash_attention_2"
+    stage2_model, torch_dtype=torch.float16, attn_implementation="sdpa"
 )
 model_stage2.to(device)
 model_stage2.eval()
@@ -425,6 +430,13 @@ def stage2_generate(model, prompt, batch_size=16):
     )
 
     # Teacher forcing generate loop
+    past_key_values = StaticCache(
+        model.config,
+        max_batch_size=batch_size,
+        max_cache_len=prompt_ids.shape[1] + codec_ids.shape[1] * 8,
+        device=model.device,
+        dtype=model.dtype,
+    )
     for frames_idx in range(codec_ids.shape[1]):
         cb0 = codec_ids[:, frames_idx : frames_idx + 1]
         prompt_ids = torch.cat([prompt_ids, cb0], dim=1)
@@ -438,6 +450,7 @@ def stage2_generate(model, prompt, batch_size=16):
                 eos_token_id=mmtokenizer.eoa,
                 pad_token_id=mmtokenizer.eoa,
                 logits_processor=block_list,
+                past_key_values=past_key_values,
             )
 
         assert (
