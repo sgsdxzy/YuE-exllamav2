@@ -17,20 +17,9 @@ from omegaconf import OmegaConf
 from post_process_audio import replace_low_freq_with_energy_matched
 from torchaudio.transforms import Resample
 from tqdm import tqdm
-from transformers import (AutoModelForCausalLM, LogitsProcessor,
-                          LogitsProcessorList)
+from transformers import AutoModelForCausalLM, LogitsProcessor, LogitsProcessorList
 from vocoder import build_codec_model, process_audio
 
-sys.path.append(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "xcodec_mini_infer")
-)
-sys.path.append(
-    os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "xcodec_mini_infer",
-        "descriptaudiocodec",
-    )
-)
 
 parser = argparse.ArgumentParser()
 # Model Configuration:
