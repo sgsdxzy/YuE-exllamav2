@@ -11,6 +11,8 @@ import torch
 import torchaudio
 from codecmanipulator import CodecManipulator
 from einops import rearrange
+from exllamav2 import ExLlamaV2, ExLlamaV2Cache, ExLlamaV2Config, ExLlamaV2Tokenizer
+from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob, ExLlamaV2Sampler
 from mmtokenizer import _MMSentencePieceTokenizer
 from models.soundstream_hubert_new import SoundStream
 from omegaconf import OmegaConf
@@ -23,36 +25,11 @@ from vocoder import build_codec_model, process_audio
 
 parser = argparse.ArgumentParser()
 # Model Configuration:
-parser.add_argument(
-    "--stage1_model",
-    type=str,
-    default="m-a-p/YuE-s1-7B-anneal-en-cot",
-    help="The model checkpoint path or identifier for the Stage 1 model.",
-)
-parser.add_argument(
-    "--stage2_model",
-    type=str,
-    default="m-a-p/YuE-s2-1B-general",
-    help="The model checkpoint path or identifier for the Stage 2 model.",
-)
-parser.add_argument(
-    "--max_new_tokens",
-    type=int,
-    default=3000,
-    help="The maximum number of new tokens to generate in one pass during text generation.",
-)
-parser.add_argument(
-    "--run_n_segments",
-    type=int,
-    default=2,
-    help="The number of segments to process during the generation.",
-)
-parser.add_argument(
-    "--stage2_batch_size",
-    type=int,
-    default=4,
-    help="The batch size used in Stage 2 inference.",
-)
+parser.add_argument("--stage1_model", type=str, default="m-a-p/YuE-s1-7B-anneal-en-cot", help="The model checkpoint path or identifier for the Stage 1 model.")
+parser.add_argument("--stage2_model", type=str, default="m-a-p/YuE-s2-1B-general", help="The model checkpoint path or identifier for the Stage 2 model.")
+parser.add_argument("--max_new_tokens", type=int, default=3000, help="The maximum number of new tokens to generate in one pass during text generation.")
+parser.add_argument("--run_n_segments", type=int, default=2, help="The number of segments to process during the generation.")
+parser.add_argument("--stage2_batch_size", type=int, default=4, help="The batch size used in Stage 2 inference.")
 # Prompt
 parser.add_argument(
     "--genre_txt",
@@ -72,80 +49,27 @@ parser.add_argument(
     help="If set, the model will use an audio file as a prompt during generation. The audio file should be specified using --audio_prompt_path.",
 )
 parser.add_argument(
-    "--audio_prompt_path",
-    type=str,
-    default="",
-    help="The file path to an audio file to use as a reference prompt when --use_audio_prompt is enabled.",
+    "--audio_prompt_path", type=str, default="", help="The file path to an audio file to use as a reference prompt when --use_audio_prompt is enabled."
 )
-parser.add_argument(
-    "--prompt_start_time",
-    type=float,
-    default=0.0,
-    help="The start time in seconds to extract the audio prompt from the given audio file.",
-)
-parser.add_argument(
-    "--prompt_end_time",
-    type=float,
-    default=30.0,
-    help="The end time in seconds to extract the audio prompt from the given audio file.",
-)
+parser.add_argument("--prompt_start_time", type=float, default=0.0, help="The start time in seconds to extract the audio prompt from the given audio file.")
+parser.add_argument("--prompt_end_time", type=float, default=30.0, help="The end time in seconds to extract the audio prompt from the given audio file.")
 # Output
-parser.add_argument(
-    "--output_dir",
-    type=str,
-    default="./output",
-    help="The directory where generated outputs will be saved.",
-)
-parser.add_argument(
-    "--keep_intermediate",
-    action="store_true",
-    help="If set, intermediate outputs will be saved during processing.",
-)
-parser.add_argument(
-    "--disable_offload_model",
-    action="store_true",
-    help="If set, the model will not be offloaded from the GPU to CPU after Stage 1 inference.",
-)
+parser.add_argument("--output_dir", type=str, default="./output", help="The directory where generated outputs will be saved.")
+parser.add_argument("--keep_intermediate", action="store_true", help="If set, intermediate outputs will be saved during processing.")
+parser.add_argument("--disable_offload_model", action="store_true", help="If set, the model will not be offloaded from the GPU to CPU after Stage 1 inference.")
 parser.add_argument("--cuda_idx", type=int, default=0)
 # Config for xcodec and upsampler
-parser.add_argument(
-    "--basic_model_config",
-    default="./xcodec_mini_infer/final_ckpt/config.yaml",
-    help="YAML files for xcodec configurations.",
-)
-parser.add_argument(
-    "--resume_path",
-    default="./xcodec_mini_infer/final_ckpt/ckpt_00360000.pth",
-    help="Path to the xcodec checkpoint.",
-)
-parser.add_argument(
-    "--config_path",
-    type=str,
-    default="./xcodec_mini_infer/decoders/config.yaml",
-    help="Path to Vocos config file.",
-)
-parser.add_argument(
-    "--vocal_decoder_path",
-    type=str,
-    default="./xcodec_mini_infer/decoders/decoder_131000.pth",
-    help="Path to Vocos decoder weights.",
-)
-parser.add_argument(
-    "--inst_decoder_path",
-    type=str,
-    default="./xcodec_mini_infer/decoders/decoder_151000.pth",
-    help="Path to Vocos decoder weights.",
-)
-parser.add_argument(
-    "-r", "--rescale", action="store_true", help="Rescale output to avoid clipping."
-)
+parser.add_argument("--basic_model_config", default="./xcodec_mini_infer/final_ckpt/config.yaml", help="YAML files for xcodec configurations.")
+parser.add_argument("--resume_path", default="./xcodec_mini_infer/final_ckpt/ckpt_00360000.pth", help="Path to the xcodec checkpoint.")
+parser.add_argument("--config_path", type=str, default="./xcodec_mini_infer/decoders/config.yaml", help="Path to Vocos config file.")
+parser.add_argument("--vocal_decoder_path", type=str, default="./xcodec_mini_infer/decoders/decoder_131000.pth", help="Path to Vocos decoder weights.")
+parser.add_argument("--inst_decoder_path", type=str, default="./xcodec_mini_infer/decoders/decoder_151000.pth", help="Path to Vocos decoder weights.")
+parser.add_argument("-r", "--rescale", action="store_true", help="Rescale output to avoid clipping.")
 
 
 args = parser.parse_args()
 if args.use_audio_prompt and not args.audio_prompt_path:
-    raise FileNotFoundError(
-        "Please offer audio prompt filepath using '--audio_prompt_path', when you enable 'use_audio_prompt'!"
-    )
+    raise FileNotFoundError("Please offer audio prompt filepath using '--audio_prompt_path', when you enable 'use_audio_prompt'!")
 stage1_model = args.stage1_model
 stage2_model = args.stage2_model
 cuda_idx = args.cuda_idx
@@ -164,14 +88,14 @@ mmtokenizer = _MMSentencePieceTokenizer(
         "tokenizer.model",
     )
 )
-model = AutoModelForCausalLM.from_pretrained(
-    stage1_model,
-    torch_dtype=torch.float16,
-    attn_implementation="sdpa",  # To enable flashattn, you have to install flash-attn
-)
-# to device, if gpu is available
-model.to(device)
-model.eval()
+exl2_config = ExLlamaV2Config(stage1_model)
+model = ExLlamaV2(exl2_config)
+tokenizer = ExLlamaV2Tokenizer(exl2_config)
+model.load()
+cache = ExLlamaV2Cache(model, batch_size=1, max_seq_len=16384)
+generator = ExLlamaV2DynamicGenerator(model, cache, tokenizer, max_batch_size=1, paged=False)
+gen_settings = ExLlamaV2Sampler.Settings()
+gen_settings.disallow_tokens(tokenizer, list(range(0, 32002)) + [32016])
 
 codectool = CodecManipulator("xcodec", 0, 1)
 codectool_stage2 = CodecManipulator("xcodec", 0, 8)
@@ -222,9 +146,7 @@ with open(args.lyrics_txt) as f:
     lyrics = split_lyrics(f.read())
 # intruction
 full_lyrics = "\n".join(lyrics)
-prompt_texts = [
-    f"Generate music from the given lyrics segment by segment.\n[Genre] {genres}\n{full_lyrics}"
-]
+prompt_texts = [f"Generate music from the given lyrics segment by segment.\n[Genre] {genres}\n{full_lyrics}"]
 prompt_texts += lyrics
 
 
@@ -254,85 +176,62 @@ for i, p in enumerate(tqdm(prompt_texts[:run_n_segments])):
             raw_codes = raw_codes.cpu().numpy().astype(np.int16)
             # Format audio prompt
             code_ids = codectool.npy2ids(raw_codes[0])
-            audio_prompt_codec = code_ids[
-                int(args.prompt_start_time * 50) : int(args.prompt_end_time * 50)
-            ]  # 50 is tps of xcodec
-            audio_prompt_codec_ids = (
-                [mmtokenizer.soa]
-                + codectool.sep_ids
-                + audio_prompt_codec
-                + [mmtokenizer.eoa]
-            )
-            sentence_ids = (
-                mmtokenizer.tokenize("[start_of_reference]")
-                + audio_prompt_codec_ids
-                + mmtokenizer.tokenize("[end_of_reference]")
-            )
+            audio_prompt_codec = code_ids[int(args.prompt_start_time * 50) : int(args.prompt_end_time * 50)]  # 50 is tps of xcodec
+            audio_prompt_codec_ids = [mmtokenizer.soa] + codectool.sep_ids + audio_prompt_codec + [mmtokenizer.eoa]
+            sentence_ids = mmtokenizer.tokenize("[start_of_reference]") + audio_prompt_codec_ids + mmtokenizer.tokenize("[end_of_reference]")
             head_id = mmtokenizer.tokenize(prompt_texts[0]) + sentence_ids
         else:
             head_id = mmtokenizer.tokenize(prompt_texts[0])
-        prompt_ids = (
-            head_id
-            + start_of_segment
-            + mmtokenizer.tokenize(section_text)
-            + [mmtokenizer.soa]
-            + codectool.sep_ids
-        )
+        prompt_ids = head_id + start_of_segment + mmtokenizer.tokenize(section_text) + [mmtokenizer.soa] + codectool.sep_ids
     else:
-        prompt_ids = (
-            end_of_segment
-            + start_of_segment
-            + mmtokenizer.tokenize(section_text)
-            + [mmtokenizer.soa]
-            + codectool.sep_ids
-        )
+        prompt_ids = end_of_segment + start_of_segment + mmtokenizer.tokenize(section_text) + [mmtokenizer.soa] + codectool.sep_ids
 
-    prompt_ids = torch.as_tensor(prompt_ids).unsqueeze(0).to(device)
+    prompt_ids = torch.as_tensor(prompt_ids).unsqueeze(0)
     input_ids = torch.cat([raw_output, prompt_ids], dim=1) if i > 1 else prompt_ids
     # Use window slicing in case output sequence exceeds the context of model
     max_context = 16384 - max_new_tokens - 1
     if input_ids.shape[-1] > max_context:
-        print(
-            f"Section {i}: output length {input_ids.shape[-1]} exceeding context length {max_context}, now using the last {max_context} tokens."
-        )
+        print(f"Section {i}: output length {input_ids.shape[-1]} exceeding context length {max_context}, now using the last {max_context} tokens.")
         input_ids = input_ids[:, -(max_context):]
     with torch.no_grad():
-        output_seq = model.generate(
+        gen_settings.top_k = 0
+        gen_settings.top_p = top_p
+        gen_settings.temperature = temperature
+        gen_settings.token_presence_penalty = repetition_penalty
+
+        job = ExLlamaV2DynamicJob(
             input_ids=input_ids,
-            max_new_tokens=max_new_tokens,
             min_new_tokens=100,
-            do_sample=True,
-            top_p=top_p,
-            temperature=temperature,
-            repetition_penalty=repetition_penalty,
-            eos_token_id=mmtokenizer.eoa,
-            pad_token_id=mmtokenizer.eoa,
-            logits_processor=LogitsProcessorList(
-                [
-                    BlockTokenRangeProcessor(0, 32002),
-                    BlockTokenRangeProcessor(32016, 32016),
-                ]
-            ),
-            guidance_scale=guidance_scale,
+            max_new_tokens=max_new_tokens,
+            stop_conditions=[mmtokenizer.eoa],  # stop on EOS token
+            gen_settings=gen_settings,
         )
+        generator.enqueue(job)
+        output_seq = input_ids
+        while generator.num_remaining_jobs():
+            results = generator.iterate()
+            for result in results:
+                if result["stage"] != "streaming":
+                    continue
+                new_token_ids = result.get("token_ids", None)
+                if new_token_ids is not None:
+                    output_seq = torch.cat((output_seq, new_token_ids), dim=-1)
+
         if output_seq[0][-1].item() != mmtokenizer.eoa:
-            tensor_eoa = torch.as_tensor([[mmtokenizer.eoa]]).to(model.device)
+            tensor_eoa = torch.tensor([[mmtokenizer.eoa]], dtype=torch.long)
             output_seq = torch.cat((output_seq, tensor_eoa), dim=1)
     if i > 1:
-        raw_output = torch.cat(
-            [raw_output, prompt_ids, output_seq[:, input_ids.shape[-1] :]], dim=1
-        )
+        raw_output = torch.cat([raw_output, prompt_ids, output_seq[:, input_ids.shape[-1] :]], dim=1)
     else:
         raw_output = output_seq
+
 
 # save raw output and check sanity
 ids = raw_output[0].cpu().numpy()
 soa_idx = np.where(ids == mmtokenizer.soa)[0].tolist()
 eoa_idx = np.where(ids == mmtokenizer.eoa)[0].tolist()
 if len(soa_idx) != len(eoa_idx):
-    raise ValueError(
-        f"invalid pairs of soa and eoa, Num of soa: {len(soa_idx)}, Num of eoa: {len(eoa_idx)}"
-    )
+    raise ValueError(f"invalid pairs of soa and eoa, Num of soa: {len(soa_idx)}, Num of eoa: {len(eoa_idx)}")
 
 vocals = []
 instrumentals = []
@@ -350,17 +249,11 @@ vocals = np.concatenate(vocals, axis=1)
 instrumentals = np.concatenate(instrumentals, axis=1)
 vocal_save_path = os.path.join(
     stage1_output_dir,
-    f"cot_{genres.replace(' ', '-')}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_vocal_{random_id}".replace(
-        ".", "@"
-    )
-    + ".npy",
+    f"cot_{genres.replace(' ', '-')}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_vocal_{random_id}".replace(".", "@") + ".npy",
 )
 inst_save_path = os.path.join(
     stage1_output_dir,
-    f"cot_{genres.replace(' ', '-')}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_instrumental_{random_id}".replace(
-        ".", "@"
-    )
-    + ".npy",
+    f"cot_{genres.replace(' ', '-')}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_instrumental_{random_id}".replace(".", "@") + ".npy",
 )
 np.save(vocal_save_path, vocals)
 np.save(inst_save_path, instrumentals)
@@ -370,14 +263,15 @@ stage1_output_set.append(inst_save_path)
 
 # offload model
 if not args.disable_offload_model:
-    model.cpu()
+    del generator
+    del cache
+    del tokenizer
     del model
+    del exl2_config
     torch.cuda.empty_cache()
 
 print("Stage 2 inference...")
-model_stage2 = AutoModelForCausalLM.from_pretrained(
-    stage2_model, torch_dtype=torch.float16, attn_implementation="sdpa"
-)
+model_stage2 = AutoModelForCausalLM.from_pretrained(stage2_model, torch_dtype=torch.float16, attn_implementation="sdpa")
 model_stage2.to(device)
 model_stage2.eval()
 
@@ -453,9 +347,7 @@ def stage2_generate(model, prompt, batch_size=16):
                 past_key_values=past_key_values,
             )
 
-        assert (
-            stage2_output.shape[1] - prompt_ids.shape[1] == 7
-        ), f"output new tokens={stage2_output.shape[1]-prompt_ids.shape[1]}"
+        assert stage2_output.shape[1] - prompt_ids.shape[1] == 7, f"output new tokens={stage2_output.shape[1]-prompt_ids.shape[1]}"
         prompt_ids = stage2_output
 
     # Return output based on batch size
@@ -472,9 +364,7 @@ def stage2_generate(model, prompt, batch_size=16):
 def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
     stage2_result = []
     for i in tqdm(range(len(stage1_output_set))):
-        output_filename = os.path.join(
-            stage2_output_dir, os.path.basename(stage1_output_set[i])
-        )
+        output_filename = os.path.join(stage2_output_dir, os.path.basename(stage1_output_set[i]))
 
         if os.path.exists(output_filename):
             print(f"{output_filename} stage2 has done.")
@@ -489,30 +379,18 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
 
         if num_batch <= batch_size:
             # If num_batch is less than or equal to batch_size, we can infer the entire prompt at once
-            output = stage2_generate(
-                model, prompt[:, : output_duration * 50], batch_size=num_batch
-            )
+            output = stage2_generate(model, prompt[:, : output_duration * 50], batch_size=num_batch)
         else:
             # If num_batch is greater than batch_size, process in chunks of batch_size
             segments = []
-            num_segments = (num_batch // batch_size) + (
-                1 if num_batch % batch_size != 0 else 0
-            )
+            num_segments = (num_batch // batch_size) + (1 if num_batch % batch_size != 0 else 0)
 
             for seg in range(num_segments):
                 start_idx = seg * batch_size * 300
                 # Ensure the end_idx does not exceed the available length
-                end_idx = min(
-                    (seg + 1) * batch_size * 300, output_duration * 50
-                )  # Adjust the last segment
-                current_batch_size = (
-                    batch_size
-                    if seg != num_segments - 1 or num_batch % batch_size == 0
-                    else num_batch % batch_size
-                )
-                segment = stage2_generate(
-                    model, prompt[:, start_idx:end_idx], batch_size=current_batch_size
-                )
+                end_idx = min((seg + 1) * batch_size * 300, output_duration * 50)  # Adjust the last segment
+                current_batch_size = batch_size if seg != num_segments - 1 or num_batch % batch_size == 0 else num_batch % batch_size
+                segment = stage2_generate(model, prompt[:, start_idx:end_idx], batch_size=current_batch_size)
                 segments.append(segment)
 
             # Concatenate all the segments
@@ -520,9 +398,7 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
 
         # Process the ending part of the prompt
         if output_duration * 50 != prompt.shape[-1]:
-            ending = stage2_generate(
-                model, prompt[:, output_duration * 50 :], batch_size=1
-            )
+            ending = stage2_generate(model, prompt[:, output_duration * 50 :], batch_size=1)
             output = np.concatenate([output, ending], axis=0)
         output = codectool_stage2.ids2npy(output)
 
@@ -533,9 +409,7 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
             for j, element in enumerate(line):
                 if element < 0 or element > 1023:
                     counter = Counter(line)
-                    most_frequant = sorted(
-                        counter.items(), key=lambda x: x[1], reverse=True
-                    )[0][0]
+                    most_frequant = sorted(counter.items(), key=lambda x: x[1], reverse=True)[0][0]
                     fixed_output[i, j] = most_frequant
         # save output
         np.save(output_filename, fixed_output)
@@ -543,12 +417,7 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
     return stage2_result
 
 
-stage2_result = stage2_inference(
-    model_stage2,
-    stage1_output_set,
-    stage2_output_dir,
-    batch_size=args.stage2_batch_size,
-)
+stage2_result = stage2_inference(model_stage2, stage1_output_set, stage2_output_dir, batch_size=args.stage2_batch_size)
 print(stage2_result)
 print("Stage 2 DONE.\n")
 
@@ -561,9 +430,7 @@ def save_audio(wav: torch.Tensor, path, sample_rate: int, rescale: bool = False)
     limit = 0.99
     max_val = wav.abs().max()
     wav = wav * min(limit / max_val, 1) if rescale else wav.clamp(-limit, limit)
-    torchaudio.save(
-        str(path), wav, sample_rate=sample_rate, encoding="PCM_S", bits_per_sample=16
-    )
+    torchaudio.save(str(path), wav, sample_rate=sample_rate, encoding="PCM_S", bits_per_sample=16)
 
 
 # reconstruct tracks
@@ -575,26 +442,17 @@ for npy in stage2_result:
     codec_result = np.load(npy)
     decodec_rlt = []
     with torch.no_grad():
-        decoded_waveform = codec_model.decode(
-            torch.as_tensor(codec_result.astype(np.int16), dtype=torch.long)
-            .unsqueeze(0)
-            .permute(1, 0, 2)
-            .to(device)
-        )
+        decoded_waveform = codec_model.decode(torch.as_tensor(codec_result.astype(np.int16), dtype=torch.long).unsqueeze(0).permute(1, 0, 2).to(device))
     decoded_waveform = decoded_waveform.cpu().squeeze(0)
     decodec_rlt.append(torch.as_tensor(decoded_waveform))
     decodec_rlt = torch.cat(decodec_rlt, dim=-1)
-    save_path = os.path.join(
-        recons_output_dir, os.path.splitext(os.path.basename(npy))[0] + ".mp3"
-    )
+    save_path = os.path.join(recons_output_dir, os.path.splitext(os.path.basename(npy))[0] + ".mp3")
     tracks.append(save_path)
     save_audio(decodec_rlt, save_path, 16000)
 # mix tracks
 for inst_path in tracks:
     try:
-        if (
-            inst_path.endswith(".wav") or inst_path.endswith(".mp3")
-        ) and "instrumental" in inst_path:
+        if (inst_path.endswith(".wav") or inst_path.endswith(".mp3")) and "instrumental" in inst_path:
             # find pair
             vocal_path = inst_path.replace("instrumental", "vocal")
             if not os.path.exists(vocal_path):
@@ -612,9 +470,7 @@ for inst_path in tracks:
         print(e)
 
 # vocoder to upsample audios
-vocal_decoder, inst_decoder = build_codec_model(
-    args.config_path, args.vocal_decoder_path, args.inst_decoder_path
-)
+vocal_decoder, inst_decoder = build_codec_model(args.config_path, args.vocal_decoder_path, args.inst_decoder_path)
 vocoder_output_dir = os.path.join(args.output_dir, "vocoder")
 vocoder_stems_dir = os.path.join(vocoder_output_dir, "stems")
 vocoder_mix_dir = os.path.join(vocoder_output_dir, "mix")
@@ -623,24 +479,10 @@ os.makedirs(vocoder_stems_dir, exist_ok=True)
 for npy in stage2_result:
     if "instrumental" in npy:
         # Process instrumental
-        instrumental_output = process_audio(
-            npy,
-            os.path.join(vocoder_stems_dir, "instrumental.mp3"),
-            args.rescale,
-            args,
-            inst_decoder,
-            codec_model,
-        )
+        instrumental_output = process_audio(npy, os.path.join(vocoder_stems_dir, "instrumental.mp3"), args.rescale, args, inst_decoder, codec_model)
     else:
         # Process vocal
-        vocal_output = process_audio(
-            npy,
-            os.path.join(vocoder_stems_dir, "vocal.mp3"),
-            args.rescale,
-            args,
-            vocal_decoder,
-            codec_model,
-        )
+        vocal_output = process_audio(npy, os.path.join(vocoder_stems_dir, "vocal.mp3"), args.rescale, args, vocal_decoder, codec_model)
 # mix tracks
 try:
     mix_output = instrumental_output + vocal_output
@@ -649,14 +491,9 @@ try:
     print(f"Created mix: {vocoder_mix}")
 except RuntimeError as e:
     print(e)
-    print(
-        f"mix {vocoder_mix} failed! inst: {instrumental_output.shape}, vocal: {vocal_output.shape}"
-    )
+    print(f"mix {vocoder_mix} failed! inst: {instrumental_output.shape}, vocal: {vocal_output.shape}")
 
 # Post process
 replace_low_freq_with_energy_matched(
-    a_file=recons_mix,  # 16kHz
-    b_file=vocoder_mix,  # 48kHz
-    c_file=os.path.join(args.output_dir, os.path.basename(recons_mix)),
-    cutoff_freq=5500.0,
+    a_file=recons_mix, b_file=vocoder_mix, c_file=os.path.join(args.output_dir, os.path.basename(recons_mix)), cutoff_freq=5500.0  # 16kHz  # 48kHz
 )
