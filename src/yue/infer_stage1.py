@@ -63,12 +63,10 @@ def stage1_generate(
     end_of_segment = mmtokenizer.tokenize("[end_of_segment]")
     # Format text prompt
     run_n_segments = min(run_n_segments + 1, len(lyrics))
-    for i, p in enumerate(tqdm(prompt_texts[:run_n_segments])):
+    for i, p in enumerate(tqdm(prompt_texts[1:run_n_segments])):
         section_text = p.replace("[start_of_segment]", "").replace("[end_of_segment]", "")
-        guidance_scale = 1.5 if i <= 1 else 1.2
+        guidance_scale = 1.5 if i == 0 else 1.2
         if i == 0:
-            continue
-        if i == 1:
             if use_audio_prompt:
                 audio_prompt = load_audio_mono(audio_prompt_path)
                 audio_prompt.unsqueeze_(0)
@@ -87,8 +85,8 @@ def stage1_generate(
         else:
             prompt_ids = end_of_segment + start_of_segment + mmtokenizer.tokenize(section_text) + [mmtokenizer.soa] + codec_tool.sep_ids
 
-        prompt_ids = torch.as_tensor(prompt_ids).unsqueeze(0)
-        input_ids = torch.cat([raw_output, prompt_ids], dim=1) if i > 1 else prompt_ids
+        prompt_ids = torch.as_tensor(prompt_ids).unsqueeze(0).to(device)
+        input_ids = torch.cat([raw_output, prompt_ids], dim=1) if i > 0 else prompt_ids
         # Use window slicing in case output sequence exceeds the context of model
         max_context = 16384 - max_new_tokens - 1
         if input_ids.shape[-1] > max_context:
@@ -97,6 +95,7 @@ def stage1_generate(
 
         if isinstance(model, ExLlamaV2DynamicGenerator):
             # TODO: guidance_scale
+            input_ids = input_ids.cpu()
             job = ExLlamaV2DynamicJob(
                 input_ids=input_ids,
                 min_new_tokens=100,
@@ -114,9 +113,8 @@ def stage1_generate(
                     new_token_ids = result.get("token_ids", None)
                     if new_token_ids is not None:
                         output_seq = torch.cat((output_seq, new_token_ids), dim=-1)
+            output_seq = output_seq.to(device)
         else:
-            prompt_ids = prompt_ids.to(model.device)
-            input_ids = input_ids.to(model.device)
             past_key_values = StaticCache(
                 model.config, max_batch_size=1, max_cache_len=input_ids.shape[-1] + max_new_tokens, device=model.device, dtype=model.dtype
             )
@@ -138,7 +136,7 @@ def stage1_generate(
         if output_seq[0][-1].item() != mmtokenizer.eoa:
             tensor_eoa = torch.tensor([[mmtokenizer.eoa]], dtype=torch.long, device=output_seq.device)
             output_seq = torch.cat((output_seq, tensor_eoa), dim=1)
-        if i > 1:
+        if i > 0:
             raw_output = torch.cat([raw_output, prompt_ids, output_seq[:, input_ids.shape[-1] :]], dim=1)
         else:
             raw_output = output_seq
