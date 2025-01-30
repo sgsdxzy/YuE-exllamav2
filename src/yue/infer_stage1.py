@@ -43,6 +43,7 @@ def stage1_generate(
     device: torch.device,
     max_new_tokens: int,
     model: ExLlamaV2DynamicGenerator | AutoModelForCausalLM,
+    cache_size: int,
     use_audio_prompt: bool,
     codec_tool: CodecManipulator,
     codec_model: SoundStream | None,
@@ -88,7 +89,7 @@ def stage1_generate(
         prompt_ids = torch.as_tensor(prompt_ids).unsqueeze(0).to(device)
         input_ids = torch.cat([raw_output, prompt_ids], dim=1) if i > 0 else prompt_ids
         # Use window slicing in case output sequence exceeds the context of model
-        max_context = 16384 - max_new_tokens - 1
+        max_context = cache_size - max_new_tokens - 1
         if input_ids.shape[-1] > max_context:
             print(f"Section {i}: output length {input_ids.shape[-1]} exceeding context length {max_context}, now using the last {max_context} tokens.")
             input_ids = input_ids[:, -(max_context):]
@@ -181,7 +182,7 @@ def main():
     # load tokenizer and model
     device = torch.device(f"cuda:{args.cuda_idx}" if torch.cuda.is_available() else "cpu")
     if args.stage1_use_exl2:
-        model = load_exl2_model(args.stage1_model)
+        model = load_exl2_model(args.stage1_model, args.stage1_cache_size)
     else:
         model = AutoModelForCausalLM.from_pretrained(args.stage1_model, torch_dtype=torch.float16, attn_implementation="sdpa")
         model.to(device)
@@ -225,6 +226,7 @@ def main():
         device,
         args.max_new_tokens,
         model,
+        args.stage1_cache_size,
         args.use_audio_prompt,
         codec_tool,
         codec_model,

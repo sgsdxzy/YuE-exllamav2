@@ -13,6 +13,7 @@ parser.add_argument("--run_n_segments", type=int, default=2, help="The number of
 parser.add_argument("--stage1_use_exl2", action="store_true", help="Use exllamav2 to load and run stage 1 model.")
 parser.add_argument("--stage2_use_exl2", action="store_true", help="Use exllamav2 to load and run stage 2 model.")
 parser.add_argument("--stage2_batch_size", type=int, default=4, help="The non-exl2 batch size used in Stage 2 inference.")
+parser.add_argument("--stage1_cache_size", type=int, default=16384, help="The cache size used in Stage 1 inference.")
 parser.add_argument("--stage2_cache_size", type=int, default=8192, help="The exl2 cache size used in Stage 2 inference.")
 # Prompt
 parser.add_argument(
@@ -54,12 +55,13 @@ parser.add_argument("-r", "--rescale", action="store_true", help="Rescale output
 def load_exl2_model(model_path: str, max_seq_len: int = -1, paged: bool = True):
     exl2_config = ExLlamaV2Config(model_path)
     model = ExLlamaV2(exl2_config)
+    model.load()
     tokenizer = ExLlamaV2Tokenizer(exl2_config)
     cache = ExLlamaV2Cache(model, max_seq_len=max_seq_len)
     generator = ExLlamaV2DynamicGenerator(model, cache, tokenizer, paged=paged)
-    model.load()
 
     return generator
+
 
 class BlockTokenRangeProcessor(LogitsProcessor):
     def __init__(self, start_id, end_id):
