@@ -15,6 +15,7 @@ parser.add_argument("--stage2_use_exl2", action="store_true", help="Use exllamav
 parser.add_argument("--stage2_batch_size", type=int, default=4, help="The non-exl2 batch size used in Stage 2 inference.")
 parser.add_argument("--stage1_cache_size", type=int, default=16384, help="The cache size used in Stage 1 inference.")
 parser.add_argument("--stage2_cache_size", type=int, default=8192, help="The exl2 cache size used in Stage 2 inference.")
+parser.add_argument("--stage1_no_guidance", action="store_true", help="Disable classifier-free guidance for stage 1")
 # Prompt
 parser.add_argument(
     "--genre_txt",
