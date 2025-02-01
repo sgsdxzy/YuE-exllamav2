@@ -102,6 +102,7 @@ class Stage1Pipeline:
     def get_audio_prompt_ids(self, audio_prompt_path: str, prompt_start_time: int, prompt_end_time: int):
         audio_prompt = load_audio_mono(audio_prompt_path)
         audio_prompt.unsqueeze_(0)
+        self.load_codec_model()
         raw_codes = self.codec_model.encode(audio_prompt.to(self.device), target_bw = 0.5)
         raw_codes = raw_codes.transpose(0, 1)
         raw_codes = raw_codes.cpu().numpy().astype(np.int16)
