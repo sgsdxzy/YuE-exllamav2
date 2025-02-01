@@ -11,6 +11,25 @@ from mmtokenizer import _MMSentencePieceTokenizer
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, LogitsProcessorList
 from transformers.cache_utils import StaticCache
+import math
+
+
+def align(n, m):
+    return ((n + m - 1) // m) * m
+
+
+def split_bsz(bsz, maxbsz):
+    n_sub_batches = math.ceil(bsz / maxbsz)
+    base_size = bsz // n_sub_batches
+    remainder = bsz % n_sub_batches
+    sub_batch_sizes = [base_size + 1] * remainder + [base_size] * (n_sub_batches - remainder)
+    indices = []
+    start = 0
+    for size in sub_batch_sizes:
+        end = start + size
+        indices.append((start, end))
+        start = end
+    return indices
 
 
 class Stage2Pipeline:
@@ -113,69 +132,16 @@ class Stage2Pipeline:
         return codec_ids, prompt_ids
 
 
-    def generate_batch(
-        self,
-        prompt: np.array,
-        batch_size: int,
-    ):
-        raise NotImplementedError()
-
-
-    def generate(
-        self,
-        output_dir: str,
-        batch_size: int = 16,
-    ) -> dict[str, np.array]:
-        outputs = {}
-        for output_name in tqdm(["cot_vocal.npy", "cot_instrumental.npy"]):
-            # Load the prompt
-            prompt = self.get_stage1_prompt(output_dir, output_name)
-
-            # Only accept 6s segments
-            output_duration = prompt.shape[-1] // 50 // 6 * 6
-            num_batch = output_duration // 6
-
-            if num_batch <= batch_size:
-                # If num_batch is less than or equal to batch_size, we can infer the entire prompt at once
-                output = self.generate_batch(prompt[:, : output_duration * 50], batch_size = num_batch)
-            else:
-                # If num_batch is greater than batch_size, process in chunks of batch_size
-                segments = []
-                num_segments = (num_batch // batch_size) + (1 if num_batch % batch_size != 0 else 0)
-
-                for seg in range(num_segments):
-                    start_idx = seg * batch_size * 300
-                    # Ensure the end_idx does not exceed the available length
-                    end_idx = min((seg + 1) * batch_size * 300, output_duration * 50)  # Adjust the last segment
-                    current_batch_size = batch_size if seg != num_segments - 1 or num_batch % batch_size == 0 else num_batch % batch_size
-                    segment = self.generate_batch(prompt[:, start_idx:end_idx], batch_size = current_batch_size)
-                    segments.append(segment)
-
-                # Concatenate all the segments
-                output = np.concatenate(segments, axis = 0)
-
-            # Process the ending part of the prompt
-            if output_duration * 50 != prompt.shape[-1]:
-                ending = self.generate_batch(prompt[:, output_duration * 50:], batch_size = 1)
-                output = np.concatenate([output, ending], axis = 0)
-
-            output = self.codec_tool_stage2.ids2npy(output)
-
-            output = self.fix_output(output)
-            outputs[output_name] = output
-        return outputs
-
-
 class Stage2Pipeline_HF(Stage2Pipeline):
 
     def __init__(
         self,
         model_path: str,
         device: torch.device,
-        cache_size: int,
-        **kwargs
+        batch_size: int,
     ):
         super().__init__(device)
+        self.batch_size = batch_size
 
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
@@ -238,6 +204,50 @@ class Stage2Pipeline_HF(Stage2Pipeline):
         return output
 
 
+    def generate(
+        self,
+        output_dir: str,
+    ) -> dict[str, np.array]:
+        outputs = {}
+        for output_name in tqdm(["cot_vocal.npy", "cot_instrumental.npy"]):
+            # Load the prompt
+            prompt = self.get_stage1_prompt(output_dir, output_name)
+
+            # Only accept 6s segments
+            output_duration = prompt.shape[-1] // 50 // 6 * 6
+            num_batch = output_duration // 6
+
+            if num_batch <= self.batch_size:
+                # If num_batch is less than or equal to batch_size, we can infer the entire prompt at once
+                output = self.generate_batch(prompt[:, : output_duration * 50], batch_size = num_batch)
+            else:
+                # If num_batch is greater than batch_size, process in chunks of batch_size
+                segments = []
+                num_segments = (num_batch // self.batch_size) + (1 if num_batch % self.batch_size != 0 else 0)
+
+                for seg in range(num_segments):
+                    start_idx = seg * self.batch_size * 300
+                    # Ensure the end_idx does not exceed the available length
+                    end_idx = min((seg + 1) * self.batch_size * 300, output_duration * 50)  # Adjust the last segment
+                    current_batch_size = self.batch_size if seg != num_segments - 1 or num_batch % self.batch_size == 0 else num_batch % self.batch_size
+                    segment = self.generate_batch(prompt[:, start_idx:end_idx], batch_size = current_batch_size)
+                    segments.append(segment)
+
+                # Concatenate all the segments
+                output = np.concatenate(segments, axis = 0)
+
+            # Process the ending part of the prompt
+            if output_duration * 50 != prompt.shape[-1]:
+                ending = self.generate_batch(prompt[:, output_duration * 50:], batch_size = 1)
+                output = np.concatenate([output, ending], axis = 0)
+
+            output = self.codec_tool_stage2.ids2npy(output)
+
+            output = self.fix_output(output)
+            outputs[output_name] = output
+        return outputs
+
+
 class Stage2Pipeline_EXL2(Stage2Pipeline):
 
     def __init__(
@@ -247,6 +257,8 @@ class Stage2Pipeline_EXL2(Stage2Pipeline):
         cache_size: int,
     ):
         super().__init__(device)
+
+        self.cache_size = cache_size
 
         assert device != "cpu", \
             "ExLlamaV2 does not support CPU inference."
@@ -267,65 +279,125 @@ class Stage2Pipeline_EXL2(Stage2Pipeline):
         self.tokenizer = ExLlamaV2Tokenizer(exl2_config)
 
 
-    def generate_batch(
+    def generate(
         self,
-        prompt: np.array,
-        batch_size: int,
-    ):
-        codec_ids, prompt_ids = self.prepare_prompt_batch(prompt, batch_size)
-        codec_ids = codec_ids.to(self.device)
-        prompt_ids = prompt_ids.to(self.device)
-        len_prompt = prompt_ids.shape[-1]
+        output_dir: str,
+    ) -> dict[str, np.array]:
 
-        cache = ExLlamaV2Cache(
-            self.model,
-            batch_size = batch_size,
-            max_seq_len = prompt_ids.shape[1] + codec_ids.shape[1] * 8,
-        )
+        parts = ["cot_vocal.npy", "cot_instrumental.npy"]
+        full_batch = []
 
-        output_ids = torch.empty((batch_size, 0), dtype = torch.long, device = self.device)
+        # Collect up to 300 token (6s) segments for all parts
+        for output_idx, output_name in tqdm(enumerate(parts)):
+            prompt = self.get_stage1_prompt(output_dir, output_name)
+            prompt = self.get_codec_ids(prompt)
+            prompt = torch.as_tensor(prompt, dtype = torch.long)
 
-        for frames_idx in tqdm(range(codec_ids.shape[1])):
-            cb0 = codec_ids[:, frames_idx : frames_idx + 1]
+            segs = torch.split(prompt, 300, dim = -1)
 
-            # Append the initial prompt to the first codec frame
-            if frames_idx == 0:
-                cb0 = torch.cat([prompt_ids, cb0], dim = -1)
+            for seg_idx, seg in enumerate(segs):
+                seg_len = seg.shape[-1]
+                full_batch.append((seg_len, seg_idx, output_idx, seg))
 
-            # Forward prompt
-            output_ids = torch.cat((output_ids, cb0), dim = -1)
-            logits = self.model.forward(
-                cb0,
-                cache = cache,
-                last_id_only = True
+        # Prepare segments
+        prefix = torch.tensor([[self.mmtokenizer.soa, self.mmtokenizer.stage_1]], dtype = torch.long)
+        suffix = torch.tensor([[self.mmtokenizer.stage_2]], dtype = torch.long)
+        for i in range(len(full_batch)):
+            seg_len, seg_idx, output_idx, codec_ids = full_batch[i]
+            prompt_ids = torch.cat((prefix, codec_ids, suffix), dim = -1)
+            full_batch[i] = (seg_len, seg_idx, output_idx, codec_ids, prompt_ids)
+
+        # Group prompts by length
+        batches = {}
+        for seq in full_batch:
+            if not seq[0] in batches:
+                batches[seq[0]] = []
+            batches[seq[0]].append(seq)
+
+        # Split into on minibatches
+        split_batch = []
+        for idx, (seg_len, batch) in enumerate(batches.items()):
+            b_seg_order = [b[1] for b in batch]
+            b_part_order = [b[2] for b in batch]
+            b_codec_ids = torch.cat([b[3] for b in batch], dim = 0)
+            b_prompt_ids = torch.cat([b[4] for b in batch], dim = 0)
+
+            max_bsz = self.cache_size // align(b_prompt_ids.shape[1] + b_codec_ids.shape[1] * 8, 32)
+            assert max_bsz > 0
+            for (a, b) in split_bsz(b_prompt_ids.shape[0], max_bsz):
+                split_batch.append((
+                    b_seg_order[a:b],
+                    b_part_order[a:b],
+                    b_codec_ids[a:b],
+                    b_prompt_ids[a:b]
+                ))
+
+        # Inference
+        output_parts = []
+        for _ in parts:
+            output_parts.append([])
+
+        for (seg_order, part_order, codec_ids, prompt_ids) in tqdm(split_batch):
+            codec_ids = codec_ids.to(self.device)
+            prompt_ids = prompt_ids.to(self.device)
+            batch_size, len_prompt = prompt_ids.shape
+
+            cache = ExLlamaV2Cache(
+                self.model,
+                batch_size = batch_size,
+                max_seq_len = align(prompt_ids.shape[1] + codec_ids.shape[1] * 8, 32)
             )
+            output_ids = torch.empty((batch_size, 0), dtype = torch.long, device = self.device)
 
-            for i in range(7):
+            for frames_idx in tqdm(range(codec_ids.shape[1])):
+                cb0 = codec_ids[:, frames_idx : frames_idx + 1]
 
-                # Slice logits instead of biasing start and end of distribution
-                first_logit = 46358
-                last_logit = 53526
-                logits = logits[:, :, first_logit : last_logit]
+                # Append the initial prompt to the first codec frame
+                if frames_idx == 0:
+                    cb0 = torch.cat([prompt_ids, cb0], dim = -1)
 
-                # Greedy sampling
-                sample = logits.argmax(dim = -1) + first_logit
-                output_ids = torch.cat((output_ids, sample), dim = -1)
-
-                # TODO: Make sure we didn't sample mmtokenizer.eoa (or mask it out?)
-
-                # Forward sample
+                # Forward prompt
+                output_ids = torch.cat((output_ids, cb0), dim = -1)
                 logits = self.model.forward(
-                    sample,
+                    cb0,
                     cache = cache,
+                    last_id_only = True
                 )
 
-        # Return output based on batch size
-        if batch_size > 1:
-            output = output_ids.cpu().numpy()[:, len_prompt:]
-            output_list = [output[i] for i in range(batch_size)]
-            output = np.concatenate(output_list, axis=0)
-        else:
-            output = output_ids[0].cpu().numpy()[len_prompt:]
+                for i in range(7):
+
+                    # Slice logits instead of biasing start and end of distribution
+                    first_logit = 46358
+                    last_logit = 53526
+                    logits = logits[:, :, first_logit : last_logit]
+
+                    # Greedy sampling
+                    sample = logits.argmax(dim = -1) + first_logit
+                    output_ids = torch.cat((output_ids, sample), dim = -1)
+
+                    # TODO: Here, original asserts that we didn't sample mmtokenizer.eoa (can we just mask it out?)
+
+                    # Forward sample
+                    logits = self.model.forward(
+                        sample,
+                        cache = cache,
+                    )
+
+            # Trim prompt
+            output_ids = output_ids[:, len_prompt:]
+
+            # Split outputs
+            for i in range(batch_size):
+                output_parts[part_order[i]].append((seg_order[i], output_ids[i:i+1, :]))
+
+        # Unshuffle and recombine output parts
+        output = {}
+        for i, p in enumerate(output_parts):
+            p = sorted(p, key = lambda x: x[0])
+            part_o = torch.cat([pp[1] for pp in p], dim = -1).flatten().cpu().numpy()
+            part_o = self.codec_tool_stage2.ids2npy(part_o)
+            part_o = self.fix_output(part_o)
+            output[parts[i]] = part_o
 
         return output
 
@@ -345,12 +417,11 @@ def main():
         pipeline = Stage2Pipeline_HF(
             model_path = args.stage2_model,
             device = device,
-            cache_size = args.stage2_cache_size,
+            batch_size = args.stage2_batch_size,
         )
 
     outputs = pipeline.generate(
         output_dir = args.output_dir,
-        batch_size = args.stage2_batch_size,
     )
 
     pipeline.save(
