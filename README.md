@@ -1,3 +1,52 @@
+# YuE-exllamav2
+
+Optimized implementation of [multimodal-art-projection/YuE](https://github.com/multimodal-art-projection/YuE) in exllamav2.
+
+## Benchmark
+Speed on 2080ti-22GB:
+
+| Stage  | Original Stage1 | Original Stage2 | Exllamav2 Stage1 | Exllamav2 Stage2 |
+| ------ | --------------- | --------------- | ---------------- | ---------------- |
+|  s/it  |       300       |       600       |        90        |        50        |
+
+And you can use [quantized model](https://huggingface.co/Doctor-Shotgun/YuE-s1-7B-anneal-en-cot-exl2) to reduce vram usage.
+
+## Usage
+
+### 1. Install environment and dependencies
+```bash
+# We recommend using conda to create a new environment.
+conda create -n yue python=3.12 # Python >=3.12 is recommended.
+conda activate yue
+```
+
+### 1.1 Install exllamav2
+```bash
+# Refer to https://github.com/turboderp-org/exllamav2?tab=readme-ov-file#installation for installation methods of exllamav2
+# Note installing from pypi uses JIT version and requires nvcc+compiler
+pip install exllamav2
+```
+
+### 2. Download the infer code and tokenizer
+```bash
+# Make sure you have git-lfs installed (https://git-lfs.com)
+# if you don't have root, see https://github.com/git-lfs/git-lfs/issues/4134#issuecomment-1635204943
+sudo apt update
+sudo apt install git-lfs
+git lfs install
+git clone https://github.com/sgsdxzy/YuE-exllamav2.git
+cd YuE-exllamav2
+git clone https://huggingface.co/m-a-p/xcodec_mini_infer
+pip install -r requirements.txt
+```
+
+### 3. Run the inference
+```bash
+python src/yue/infer.py --stage1_use_exl2 --stage2_use_exl2 --stage2_cache_size 32768 [original args]
+```
+
+
+## Original README of multimodal-art-projection/YuE
 <p align="center">
     <img src="./assets/logo/白底.png" width="400" />
 </p>
