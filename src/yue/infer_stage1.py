@@ -360,16 +360,27 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
             # Accept prompt tokens
             seq = torch.cat((seq, prompt_ids), dim=-1)
 
+            # Use window slicing in case output sequence exceeds the context of model
+            max_context = self.cache_size - max_new_tokens - 1
+            if seq.shape[-1] > max_context:
+                print(f"Section {i}: output length {seq.shape[-1]} exceeding context length {max_context}, " f"now using the last {max_context} tokens.")
+                cache.current_seq_len = 0
+                full_ids = seq[:, -max_context:]
+                incremental_ids = full_ids
+            else:
+                full_ids = seq
+                incremental_ids = prompt_ids
+
             # For the unconditional context, mask out all but the last token
             if cfg:
-                mask_len = seq.shape[-1] - 1
+                mask_len = full_ids.shape[-1] - 1
                 full_mask = torch.zeros((2, cache.max_seq_len), dtype=torch.half, device=self.device)
                 full_mask[1, :mask_len] = -65504.0
                 position_offsets = torch.tensor([[0], [-mask_len]], dtype=torch.int)
-                input_mask = full_mask[:, : seq.shape[-1]]
+                input_mask = full_mask[:, : full_ids.shape[-1]]
 
             # Forward prompt
-            logits = self.model.forward(prompt_ids[:, :], cache=cache, input_mask=input_mask, position_offsets=position_offsets, last_id_only=True)
+            logits = self.model.forward(incremental_ids[:, :], cache=cache, input_mask=input_mask, position_offsets=position_offsets, last_id_only=True)
 
             # Generate until EOS or max_new_tokens
             for new_tokens in tqdm(range(max_new_tokens)):
@@ -384,16 +395,17 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
 
                 # Sample
                 logits = logits.float().cpu()
-                sample, _, _, _, _ = ExLlamaV2Sampler.sample(logits, gen_settings, seq[:1], rng.random(), self.tokenizer)
+                sample, _, _, _, _ = ExLlamaV2Sampler.sample(logits, gen_settings, full_ids[:1], rng.random(), self.tokenizer)
                 if cfg:
                     sample = torch.cat((sample, sample), dim=0)
 
                 # Accept token
+                full_ids = torch.cat((full_ids, sample), dim=-1)
                 seq = torch.cat((seq, sample), dim=-1)
 
                 # Get next logits (update cache even if sample is EOA and we don't need next logits)
                 if cfg:
-                    input_mask = full_mask[:, : seq.shape[-1]]
+                    input_mask = full_mask[:, : full_ids.shape[-1]]
                 logits = self.model.forward(sample, cache=cache, input_mask=input_mask, position_offsets=position_offsets)
 
                 # End on EOA
