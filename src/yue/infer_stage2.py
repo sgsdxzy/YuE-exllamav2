@@ -5,7 +5,7 @@ from collections import Counter
 import numpy as np
 import torch
 from codecmanipulator import CodecManipulator
-from common import BlockTokenRangeProcessor, load_exl2_model, parser
+from common import BlockTokenRangeProcessor, seed_everything, parser
 from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache, ExLlamaV2Tokenizer
 from mmtokenizer import _MMSentencePieceTokenizer
 from tqdm import tqdm
@@ -150,6 +150,8 @@ class Stage2Pipeline_HF(Stage2Pipeline):
         )
         self.model.to(device)
         self.model.eval()
+        if torch.__version__ >= "2.0.0":
+            self.model = torch.compile(self.model)
 
 
     def generate_batch(
@@ -209,7 +211,7 @@ class Stage2Pipeline_HF(Stage2Pipeline):
         output_dir: str,
     ) -> dict[str, np.array]:
         outputs = {}
-        for output_name in tqdm(["cot_vocal.npy", "cot_instrumental.npy"]):
+        for output_name in tqdm(["vtrack.npy", "itrack.npy"]):
             # Load the prompt
             prompt = self.get_stage1_prompt(output_dir, output_name)
 
@@ -284,7 +286,7 @@ class Stage2Pipeline_EXL2(Stage2Pipeline):
         output_dir: str,
     ) -> dict[str, np.array]:
 
-        parts = ["cot_vocal.npy", "cot_instrumental.npy"]
+        parts = ["vtrack.npy", "itrack.npy"]
         full_batch = []
 
         # Collect up to 300 token (6s) segments for all parts
@@ -404,6 +406,9 @@ class Stage2Pipeline_EXL2(Stage2Pipeline):
 
 def main():
     args = parser.parse_args()
+    if args.seed is not None:
+        seed_everything(args.seed)
+
     device = torch.device(f"cuda:{args.cuda_idx}" if torch.cuda.is_available() else "cpu")
 
     if args.stage2_use_exl2:

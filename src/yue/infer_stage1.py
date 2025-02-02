@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 from codecmanipulator import CodecManipulator
-from common import BlockTokenRangeProcessor, load_exl2_model, parser
+from common import BlockTokenRangeProcessor, seed_everything, parser
 from einops import rearrange
 from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache, ExLlamaV2Tokenizer
 from exllamav2.generator import ExLlamaV2Sampler
@@ -18,7 +18,6 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, LogitsProcessorList
 from transformers.cache_utils import StaticCache
 from dataclasses import dataclass
-from functools import lru_cache
 import random
 
 
@@ -37,7 +36,6 @@ class SampleSettings:
             self.guidance_scale = None
 
 
-@lru_cache
 def load_audio_mono(filepath, sampling_rate=16000):
     audio, sr = torchaudio.load(filepath)
     # Convert to mono
@@ -47,6 +45,16 @@ def load_audio_mono(filepath, sampling_rate=16000):
         resampler = Resample(orig_freq=sr, new_freq=sampling_rate)
         audio = resampler(audio)
     return audio
+
+
+def encode_audio(codec_model, audio_prompt, device, target_bw=0.5):
+    if len(audio_prompt.shape) < 3:
+        audio_prompt.unsqueeze_(0)
+    with torch.no_grad():
+        raw_codes = codec_model.encode(audio_prompt.to(device), target_bw=target_bw)
+    raw_codes = raw_codes.transpose(0, 1)
+    raw_codes = raw_codes.cpu().numpy().astype(np.int16)
+    return raw_codes
 
 
 class Stage1Pipeline:
@@ -74,7 +82,6 @@ class Stage1Pipeline:
         self.start_of_segment = self.mmtokenizer.tokenize("[start_of_segment]")
         self.end_of_segment = self.mmtokenizer.tokenize("[end_of_segment]")
 
-
     def load_codec_model(self):
         if self.codec_model is not None:
             return
@@ -84,7 +91,6 @@ class Stage1Pipeline:
         parameter_dict = torch.load(self.resume_path, map_location = self.device, weights_only = False)
         self.codec_model.load_state_dict(parameter_dict["codec_model"])
         self.codec_model.eval()
-
 
     def get_prompt_texts(self, genres: str, lyrics: str):
         def split_lyrics(lyrics):
@@ -98,35 +104,61 @@ class Stage1Pipeline:
         prompt_texts += lyrics
         return lyrics, prompt_texts
 
-
-    def get_audio_prompt_ids(self, audio_prompt_path: str, prompt_start_time: int, prompt_end_time: int):
-        audio_prompt = load_audio_mono(audio_prompt_path)
-        audio_prompt.unsqueeze_(0)
+    def get_audio_prompt_ids(
+        self,
+        use_dual_tracks_prompt: bool,
+        vocal_track_prompt_path: str,
+        instrumental_track_prompt_path: str,
+        use_audio_prompt: bool,
+        audio_prompt_path: str,
+        prompt_start_time: int,
+        prompt_end_time: int,
+    ):
         self.load_codec_model()
-        raw_codes = self.codec_model.encode(audio_prompt.to(self.device), target_bw = 0.5)
-        raw_codes = raw_codes.transpose(0, 1)
-        raw_codes = raw_codes.cpu().numpy().astype(np.int16)
-        # Format audio prompt
-        code_ids = self.codec_tool.npy2ids(raw_codes[0])
-        audio_prompt_codec = code_ids[int(prompt_start_time * 50): int(prompt_end_time * 50)]  # 50 is tps of xcodec
+        if use_dual_tracks_prompt:
+            vocals_ids = load_audio_mono(vocal_track_prompt_path)
+            instrumental_ids = load_audio_mono(instrumental_track_prompt_path)
+            vocals_ids = encode_audio(self.codec_model, vocals_ids, self.device, target_bw=0.5)
+            instrumental_ids = encode_audio(self.codec_model, instrumental_ids, self.device, target_bw=0.5)
+            vocals_ids = self.codec_tool.npy2ids(vocals_ids[0])
+            instrumental_ids = self.codec_tool.npy2ids(instrumental_ids[0])
+            ids_segment_interleaved = rearrange([np.array(vocals_ids), np.array(instrumental_ids)], 'b n -> (n b)')
+            audio_prompt_codec = ids_segment_interleaved[int(prompt_start_time*50*2): int(prompt_end_time*50*2)]
+            audio_prompt_codec = audio_prompt_codec.tolist()
+        elif use_audio_prompt:
+            audio_prompt = load_audio_mono(audio_prompt_path)
+            raw_codes = encode_audio(self.codec_model, audio_prompt, self.device, target_bw=0.5)
+            # Format audio prompt
+            code_ids = self.codec_tool.npy2ids(raw_codes[0])
+            audio_prompt_codec = code_ids[int(prompt_start_time *50): int(prompt_end_time *50)] # 50 is tps of xcodec
         audio_prompt_codec_ids = [self.mmtokenizer.soa] + self.codec_tool.sep_ids + audio_prompt_codec + [self.mmtokenizer.eoa]
-        sentence_ids = self.mmtokenizer.tokenize("[start_of_reference]") + audio_prompt_codec_ids + self.mmtokenizer.tokenize(
-            "[end_of_reference]")
+        sentence_ids = self.mmtokenizer.tokenize("[start_of_reference]") +  audio_prompt_codec_ids + self.mmtokenizer.tokenize("[end_of_reference]")
         return sentence_ids
-
 
     def get_first_segment_prompt(
         self,
         segment_p: str,
         prompt_text_0: str,
+        use_dual_tracks_prompt: bool,
+        vocal_track_prompt_path: str,
+        instrumental_track_prompt_path: str,
+        use_audio_prompt: bool,
         audio_prompt_path: str,
         prompt_start_time: int,
         prompt_end_time: int,
     ):
         section_text = segment_p.replace("[start_of_segment]", "").replace("[end_of_segment]", "")
         head_id = self.mmtokenizer.tokenize(prompt_text_0)
-        if audio_prompt_path is not None:
-            head_id += self.get_audio_prompt_ids(audio_prompt_path, prompt_start_time, prompt_end_time)
+        if use_dual_tracks_prompt or use_audio_prompt:
+            head_id += self.get_audio_prompt_ids(
+                use_dual_tracks_prompt,
+                vocal_track_prompt_path,
+                instrumental_track_prompt_path,
+                use_audio_prompt,
+                audio_prompt_path,
+                prompt_start_time,
+                prompt_end_time,
+            )
         return (
                 head_id +
                 self.start_of_segment +
@@ -134,7 +166,6 @@ class Stage1Pipeline:
                 [self.mmtokenizer.soa] +
                 self.codec_tool.sep_ids
         )
-
 
     def get_segment_prompt(
         self,
@@ -149,11 +180,11 @@ class Stage1Pipeline:
                 self.codec_tool.sep_ids
         )
 
-
     def save(self,
         raw_output: torch.Tensor,
         output_dir: str,
-        use_audio_prompt: bool
+        use_audio_prompt: bool,
+        use_dual_tracks_prompt: bool
     ):
         # save raw output and check sanity
         ids = raw_output[0].cpu().numpy()
@@ -164,7 +195,7 @@ class Stage1Pipeline:
 
         vocals = []
         instrumentals = []
-        range_begin = 1 if use_audio_prompt else 0
+        range_begin = 1 if use_audio_prompt or use_dual_tracks_prompt else 0
         for i in range(range_begin, len(soa_idx)):
             codec_ids = ids[soa_idx[i] + 1 : eoa_idx[i]]
             if codec_ids[0] == 32016:
@@ -178,8 +209,8 @@ class Stage1Pipeline:
         instrumentals = np.concatenate(instrumentals, axis=1)
         stage1_output_dir = os.path.join(output_dir, "stage1")
         os.makedirs(stage1_output_dir, exist_ok=True)
-        vocal_save_path = os.path.join(stage1_output_dir, "cot_vocal.npy")
-        inst_save_path = os.path.join(stage1_output_dir, "cot_instrumental.npy")
+        vocal_save_path = os.path.join(stage1_output_dir, "vtrack.npy")
+        inst_save_path = os.path.join(stage1_output_dir, "itrack.npy")
         np.save(vocal_save_path, vocals)
         np.save(inst_save_path, instrumentals)
 
@@ -203,12 +234,18 @@ class Stage1Pipeline_HF(Stage1Pipeline):
             device_map = self.device
         )
         self.model.eval()
+        if torch.__version__ >= "2.0.0":
+            self.model = torch.compile(self.model)
         self.cache_size = cache_size
 
 
     def generate(
         self,
-        audio_prompt_path: str | None,
+        use_dual_tracks_prompt: bool,
+        vocal_track_prompt_path: str,
+        instrumental_track_prompt_path: str,
+        use_audio_prompt: bool,
+        audio_prompt_path: str,
         genres: str,
         lyrics: str,
         run_n_segments: int,
@@ -228,6 +265,10 @@ class Stage1Pipeline_HF(Stage1Pipeline):
                 prompt_ids = self.get_first_segment_prompt(
                     p,
                     prompt_texts[0],
+                    use_dual_tracks_prompt,
+                    vocal_track_prompt_path,
+                    instrumental_track_prompt_path,
+                    use_audio_prompt,
                     audio_prompt_path,
                     prompt_start_time,
                     prompt_end_time
@@ -316,7 +357,11 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
 
     def generate(
         self,
-        audio_prompt_path: str | None,
+        use_dual_tracks_prompt: bool,
+        vocal_track_prompt_path: str,
+        instrumental_track_prompt_path: str,
+        use_audio_prompt: bool,
+        audio_prompt_path: str,
         genres: str,
         lyrics: str,
         run_n_segments: int,
@@ -363,6 +408,10 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
                 prompt_ids = self.get_first_segment_prompt(
                     prompt_texts[1],
                     prompt_texts[0],
+                    use_dual_tracks_prompt,
+                    vocal_track_prompt_path,
+                    instrumental_track_prompt_path,
+                    use_audio_prompt,
                     audio_prompt_path,
                     prompt_start_time,
                     prompt_end_time
@@ -442,6 +491,10 @@ def main():
     args = parser.parse_args()
     if args.use_audio_prompt and not args.audio_prompt_path:
         raise FileNotFoundError("Please offer audio prompt filepath using '--audio_prompt_path', when you enable 'use_audio_prompt'!")
+    if args.use_dual_tracks_prompt and not args.vocal_track_prompt_path and not args.instrumental_track_prompt_path:
+        raise FileNotFoundError("Please offer dual tracks prompt filepath using '--vocal_track_prompt_path' and '--inst_decoder_path', when you enable '--use_dual_tracks_prompt'!")
+    if args.seed is not None:
+        seed_everything(args.seed)
 
     device = torch.device(f"cuda:{args.cuda_idx}" if torch.cuda.is_available() else "cpu")
 
@@ -469,7 +522,11 @@ def main():
 
     # Load tokenizer and models
     raw_output = pipeline.generate(
-        audio_prompt_path = args.audio_prompt_path if args.use_audio_prompt else None,
+        use_dual_tracks_prompt = args.use_dual_tracks_prompt,
+        vocal_track_prompt_path = args.vocal_track_prompt_path,
+        instrumental_track_prompt_path = args.instrumental_track_prompt_path,
+        use_audio_prompt = args.use_audio_prompt,
+        audio_prompt_path = args.audio_prompt_path,
         genres = genres,
         lyrics = lyrics,
         run_n_segments = args.run_n_segments,
@@ -483,7 +540,8 @@ def main():
     pipeline.save(
         raw_output,
         args.output_dir,
-        args.use_audio_prompt
+        args.use_audio_prompt,
+        args.use_dual_tracks_prompt,
     )
 
 

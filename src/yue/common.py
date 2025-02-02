@@ -1,8 +1,9 @@
 import argparse
 
-from exllamav2 import ExLlamaV2, ExLlamaV2Cache, ExLlamaV2Config, ExLlamaV2Tokenizer
-from exllamav2.generator import ExLlamaV2DynamicGenerator
 from transformers import LogitsProcessor
+import torch
+import random 
+import numpy as np
 
 parser = argparse.ArgumentParser()
 # Model Configuration:
@@ -39,11 +40,15 @@ parser.add_argument(
 )
 parser.add_argument("--prompt_start_time", type=float, default=0.0, help="The start time in seconds to extract the audio prompt from the given audio file.")
 parser.add_argument("--prompt_end_time", type=float, default=30.0, help="The end time in seconds to extract the audio prompt from the given audio file.")
+parser.add_argument("--use_dual_tracks_prompt", action="store_true", help="If set, the model will use dual tracks as a prompt during generation. The vocal and instrumental files should be specified using --vocal_track_prompt_path and --instrumental_track_prompt_path.")
+parser.add_argument("--vocal_track_prompt_path", type=str, default="", help="The file path to a vocal track file to use as a reference prompt when --use_dual_tracks_prompt is enabled.")
+parser.add_argument("--instrumental_track_prompt_path", type=str, default="", help="The file path to an instrumental track file to use as a reference prompt when --use_dual_tracks_prompt is enabled.")
 # Output
 parser.add_argument("--output_dir", type=str, default="./output", help="The directory where generated outputs will be saved.")
 parser.add_argument("--keep_intermediate", action="store_true", help="If set, intermediate outputs will be saved during processing.")
 parser.add_argument("--disable_offload_model", action="store_true", help="If set, the model will not be offloaded from the GPU to CPU after Stage 1 inference.")
 parser.add_argument("--cuda_idx", type=int, default=0)
+parser.add_argument("--seed", type=int, default=None, help="An integer value to reproduce generation.")
 # Config for xcodec and upsampler
 parser.add_argument("--basic_model_config", default="./xcodec_mini_infer/final_ckpt/config.yaml", help="YAML files for xcodec configurations.")
 parser.add_argument("--resume_path", default="./xcodec_mini_infer/final_ckpt/ckpt_00360000.pth", help="Path to the xcodec checkpoint.")
@@ -53,15 +58,13 @@ parser.add_argument("--inst_decoder_path", type=str, default="./xcodec_mini_infe
 parser.add_argument("-r", "--rescale", action="store_true", help="Rescale output to avoid clipping.")
 
 
-def load_exl2_model(model_path: str, max_seq_len: int = -1, paged: bool = True):
-    exl2_config = ExLlamaV2Config(model_path)
-    model = ExLlamaV2(exl2_config)
-    model.load()
-    tokenizer = ExLlamaV2Tokenizer(exl2_config)
-    cache = ExLlamaV2Cache(model, max_seq_len=max_seq_len)
-    generator = ExLlamaV2DynamicGenerator(model, cache, tokenizer, paged=paged)
-
-    return generator
+def seed_everything(seed: int = 42): 
+    random.seed(seed) 
+    np.random.seed(seed) 
+    torch.manual_seed(seed) 
+    torch.cuda.manual_seed_all(seed) 
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 class BlockTokenRangeProcessor(LogitsProcessor):

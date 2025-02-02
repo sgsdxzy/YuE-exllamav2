@@ -10,3 +10,4 @@ tensorboard
 descript-audiotools>=0.7.2
 descript-audio-codec
 scipy==1.10.1
+accelerate>=0.26.0
