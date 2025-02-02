@@ -3,7 +3,7 @@
 Optimized implementation of [multimodal-art-projection/YuE](https://github.com/multimodal-art-projection/YuE) in exllamav2.
 
 ## Benchmark
-Speed on 2080ti-22GB:
+Speed on 2080ti-22GB using the original bf16 model:
 
 | Stage  | Original Stage1 | Original Stage2 | Exllamav2 Stage1 | Exllamav2 Stage2 |
 | ------ | --------------- | --------------- | ---------------- | ---------------- |
@@ -22,7 +22,7 @@ conda activate yue
 
 ### 1.1 Install exllamav2
 ```bash
-# Refer to https://github.com/turboderp-org/exllamav2?tab=readme-ov-file#installation for installation methods of exllamav2
+# Refer to https://github.com/turboderp-org/exllamav2?tab=readme-ov-file#installation
 # Note installing from pypi uses JIT version and requires nvcc+compiler
 pip install exllamav2
 ```
