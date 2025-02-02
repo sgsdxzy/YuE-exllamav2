@@ -50,10 +50,7 @@ def post_process(
                 if not os.path.exists(vocal_path):
                     continue
                 # mix
-                recons_mix = os.path.join(
-                    recons_mix_dir,
-                    os.path.basename(inst_path).replace("itrack", "mixed"),
-                )
+                recons_mix = os.path.join(recons_mix_dir, os.path.basename(inst_path).replace("itrack", "mixed"))
                 vocal_stem, sr = sf.read(inst_path)
                 instrumental_stem, _ = sf.read(vocal_path)
                 mix_stem = (vocal_stem + instrumental_stem) / 1

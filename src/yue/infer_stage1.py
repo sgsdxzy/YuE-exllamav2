@@ -1,14 +1,16 @@
 import os
+import random
 import re
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
 from codecmanipulator import CodecManipulator
-from common import BlockTokenRangeProcessor, seed_everything, parser
+from common import BlockTokenRangeProcessor, parser, seed_everything
 from einops import rearrange
-from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache, ExLlamaV2Tokenizer
+from exllamav2 import ExLlamaV2, ExLlamaV2Cache, ExLlamaV2Config, ExLlamaV2Tokenizer
 from exllamav2.generator import ExLlamaV2Sampler
 from mmtokenizer import _MMSentencePieceTokenizer
 from models.soundstream_hubert_new import SoundStream
@@ -17,8 +19,6 @@ from torchaudio.transforms import Resample
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, LogitsProcessorList
 from transformers.cache_utils import StaticCache
-from dataclasses import dataclass
-import random
 
 
 @dataclass
@@ -59,12 +59,7 @@ def encode_audio(codec_model, audio_prompt, device, target_bw=0.5):
 
 class Stage1Pipeline:
 
-    def __init__(
-        self,
-        device: torch.device,
-        basic_model_config: str,
-        resume_path: str,
-    ):
+    def __init__(self, device: torch.device, basic_model_config: str, resume_path: str):
         self.device = device
         self.codec_tool = CodecManipulator("xcodec", 0, 1)
         self.basic_model_config = basic_model_config
@@ -72,13 +67,7 @@ class Stage1Pipeline:
         self.codec_model = None
 
         # Load tokenizer
-        self.mmtokenizer = _MMSentencePieceTokenizer(
-            os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "mm_tokenizer_v0.2_hf",
-                "tokenizer.model",
-            )
-        )
+        self.mmtokenizer = _MMSentencePieceTokenizer(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mm_tokenizer_v0.2_hf", "tokenizer.model"))
         self.start_of_segment = self.mmtokenizer.tokenize("[start_of_segment]")
         self.end_of_segment = self.mmtokenizer.tokenize("[end_of_segment]")
 
@@ -88,7 +77,7 @@ class Stage1Pipeline:
         model_config = OmegaConf.load(self.basic_model_config)
         assert model_config.generator.name == "SoundStream"
         self.codec_model = SoundStream(**model_config.generator.config).to(self.device)
-        parameter_dict = torch.load(self.resume_path, map_location = self.device, weights_only = False)
+        parameter_dict = torch.load(self.resume_path, map_location=self.device, weights_only=False)
         self.codec_model.load_state_dict(parameter_dict["codec_model"])
         self.codec_model.eval()
 
@@ -98,6 +87,7 @@ class Stage1Pipeline:
             segments = re.findall(pattern, lyrics, re.DOTALL)
             structured_lyrics = [f"[{seg[0]}]\n{seg[1].strip()}\n\n" for seg in segments]
             return structured_lyrics
+
         lyrics = split_lyrics(lyrics)
         full_lyrics = "\n".join(lyrics)
         prompt_texts = [f"Generate music from the given lyrics segment by segment.\n[Genre] {genres}\n{full_lyrics}"]
@@ -122,17 +112,17 @@ class Stage1Pipeline:
             instrumental_ids = encode_audio(self.codec_model, instrumental_ids, self.device, target_bw=0.5)
             vocals_ids = self.codec_tool.npy2ids(vocals_ids[0])
             instrumental_ids = self.codec_tool.npy2ids(instrumental_ids[0])
-            ids_segment_interleaved = rearrange([np.array(vocals_ids), np.array(instrumental_ids)], 'b n -> (n b)')
-            audio_prompt_codec = ids_segment_interleaved[int(prompt_start_time*50*2): int(prompt_end_time*50*2)]
+            ids_segment_interleaved = rearrange([np.array(vocals_ids), np.array(instrumental_ids)], "b n -> (n b)")
+            audio_prompt_codec = ids_segment_interleaved[int(prompt_start_time * 50 * 2) : int(prompt_end_time * 50 * 2)]
             audio_prompt_codec = audio_prompt_codec.tolist()
         elif use_audio_prompt:
             audio_prompt = load_audio_mono(audio_prompt_path)
             raw_codes = encode_audio(self.codec_model, audio_prompt, self.device, target_bw=0.5)
             # Format audio prompt
             code_ids = self.codec_tool.npy2ids(raw_codes[0])
-            audio_prompt_codec = code_ids[int(prompt_start_time *50): int(prompt_end_time *50)] # 50 is tps of xcodec
+            audio_prompt_codec = code_ids[int(prompt_start_time * 50) : int(prompt_end_time * 50)]  # 50 is tps of xcodec
         audio_prompt_codec_ids = [self.mmtokenizer.soa] + self.codec_tool.sep_ids + audio_prompt_codec + [self.mmtokenizer.eoa]
-        sentence_ids = self.mmtokenizer.tokenize("[start_of_reference]") +  audio_prompt_codec_ids + self.mmtokenizer.tokenize("[end_of_reference]")
+        sentence_ids = self.mmtokenizer.tokenize("[start_of_reference]") + audio_prompt_codec_ids + self.mmtokenizer.tokenize("[end_of_reference]")
         return sentence_ids
 
     def get_first_segment_prompt(
@@ -159,33 +149,13 @@ class Stage1Pipeline:
                 prompt_start_time,
                 prompt_end_time,
             )
-        return (
-                head_id +
-                self.start_of_segment +
-                self.mmtokenizer.tokenize(section_text) +
-                [self.mmtokenizer.soa] +
-                self.codec_tool.sep_ids
-        )
+        return head_id + self.start_of_segment + self.mmtokenizer.tokenize(section_text) + [self.mmtokenizer.soa] + self.codec_tool.sep_ids
 
-    def get_segment_prompt(
-        self,
-        segment_p: str,
-    ):
+    def get_segment_prompt(self, segment_p: str):
         section_text = segment_p.replace("[start_of_segment]", "").replace("[end_of_segment]", "")
-        return (
-                self.end_of_segment +
-                self.start_of_segment +
-                self.mmtokenizer.tokenize(section_text) +
-                [self.mmtokenizer.soa] +
-                self.codec_tool.sep_ids
-        )
+        return self.end_of_segment + self.start_of_segment + self.mmtokenizer.tokenize(section_text) + [self.mmtokenizer.soa] + self.codec_tool.sep_ids
 
-    def save(self,
-        raw_output: torch.Tensor,
-        output_dir: str,
-        use_audio_prompt: bool,
-        use_dual_tracks_prompt: bool
-    ):
+    def save(self, raw_output: torch.Tensor, output_dir: str, use_audio_prompt: bool, use_dual_tracks_prompt: bool):
         # save raw output and check sanity
         ids = raw_output[0].cpu().numpy()
         soa_idx = np.where(ids == self.mmtokenizer.soa)[0].tolist()
@@ -217,27 +187,15 @@ class Stage1Pipeline:
 
 class Stage1Pipeline_HF(Stage1Pipeline):
 
-    def __init__(
-        self,
-        model_path: str,
-        device: torch.device,
-        cache_size: int,
-        **kwargs
-    ):
+    def __init__(self, model_path: str, device: torch.device, cache_size: int, **kwargs):
         super().__init__(device, **kwargs)
 
         # Load HF model
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype = torch.float16,
-            attn_implementation = "sdpa",
-            device_map = self.device
-        )
+        self.model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16, attn_implementation="sdpa", device_map=self.device)
         self.model.eval()
         if torch.__version__ >= "2.0.0":
             self.model = torch.compile(self.model)
         self.cache_size = cache_size
-
 
     def generate(
         self,
@@ -271,55 +229,45 @@ class Stage1Pipeline_HF(Stage1Pipeline):
                     use_audio_prompt,
                     audio_prompt_path,
                     prompt_start_time,
-                    prompt_end_time
+                    prompt_end_time,
                 )
             else:
                 prompt_ids = self.get_segment_prompt(p)
             prompt_ids = torch.as_tensor(prompt_ids).unsqueeze(0).to(self.device)
-            input_ids = torch.cat([raw_output, prompt_ids], dim = 1) if i > 0 else prompt_ids
+            input_ids = torch.cat([raw_output, prompt_ids], dim=1) if i > 0 else prompt_ids
 
             # Use window slicing in case output sequence exceeds the context of model
             max_context = self.cache_size - max_new_tokens - 1
             if input_ids.shape[-1] > max_context:
-                print(
-                    f"Section {i}: output length {input_ids.shape[-1]} exceeding context length {max_context}, "
-                    f"now using the last {max_context} tokens."
-                )
+                print(f"Section {i}: output length {input_ids.shape[-1]} exceeding context length {max_context}, " f"now using the last {max_context} tokens.")
                 input_ids = input_ids[:, -max_context:]
 
             past_key_values = StaticCache(
-                self.model.config,
-                max_batch_size = 1,
-                max_cache_len = input_ids.shape[-1] + max_new_tokens,
-                device = self.model.device,
-                dtype = self.model.dtype
+                self.model.config, max_batch_size=1, max_cache_len=input_ids.shape[-1] + max_new_tokens, device=self.model.device, dtype=self.model.dtype
             )
 
-            processors = LogitsProcessorList([
-                BlockTokenRangeProcessor(0, 32002),
-                BlockTokenRangeProcessor(32016, 32016)
-            ])
+            processors = LogitsProcessorList([BlockTokenRangeProcessor(0, 32002), BlockTokenRangeProcessor(32016, 32016)])
 
             output_seq = self.model.generate(
-                input_ids = input_ids,
-                max_new_tokens = max_new_tokens,
-                min_new_tokens = 100,
-                do_sample = True,
-                top_p = sample_settings.top_p,
-                temperature = sample_settings.temperature,
-                repetition_penalty = sample_settings.repetition_penalty,
-                eos_token_id = self.mmtokenizer.eoa,
-                pad_token_id = self.mmtokenizer.eoa,
-                logits_processor = processors,
-                guidance_scale = sample_settings.guidance_scale_seg0 if i == 0 else sample_settings.guidance_scale,
-                past_key_values = past_key_values,
+                input_ids=input_ids,
+                max_new_tokens=max_new_tokens,
+                min_new_tokens=100,
+                do_sample=True,
+                top_p=sample_settings.top_p,
+                temperature=sample_settings.temperature,
+                repetition_penalty=sample_settings.repetition_penalty,
+                eos_token_id=self.mmtokenizer.eoa,
+                pad_token_id=self.mmtokenizer.eoa,
+                logits_processor=processors,
+                guidance_scale=sample_settings.guidance_scale_seg0 if i == 0 else sample_settings.guidance_scale,
+                past_key_values=past_key_values,
             )
 
             if output_seq[0][-1].item() != self.mmtokenizer.eoa:
-                tensor_eoa = torch.tensor([[self.mmtokenizer.eoa]], dtype = torch.long, device = output_seq.device)
-                output_seq = torch.cat((output_seq, tensor_eoa), dim = 1)
+                tensor_eoa = torch.tensor([[self.mmtokenizer.eoa]], dtype=torch.long, device=output_seq.device)
+                output_seq = torch.cat((output_seq, tensor_eoa), dim=1)
             if i > 0:
-                raw_output = torch.cat([raw_output, prompt_ids, output_seq[:, input_ids.shape[-1]:]], dim = 1)
+                raw_output = torch.cat([raw_output, prompt_ids, output_seq[:, input_ids.shape[-1] :]], dim=1)
             else:
                 raw_output = output_seq
         return raw_output
@@ -327,17 +275,10 @@ class Stage1Pipeline_HF(Stage1Pipeline):
 
 class Stage1Pipeline_EXL2(Stage1Pipeline):
 
-    def __init__(
-        self,
-        model_path: str,
-        device: torch.device,
-        cache_size: int,
-        **kwargs
-    ):
+    def __init__(self, model_path: str, device: torch.device, cache_size: int, **kwargs):
         super().__init__(device, **kwargs)
 
-        assert device != "cpu", \
-            "ExLlamaV2 does not support CPU inference."
+        assert device != "cpu", "ExLlamaV2 does not support CPU inference."
 
         # Load EXL2 model
         device_idx = self.device.index
@@ -354,7 +295,6 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
 
         # TODO: Output layer could be trimmed here to avoid masking out the first 32k tokens during generation
 
-
     def generate(
         self,
         use_dual_tracks_prompt: bool,
@@ -368,7 +308,7 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
         max_new_tokens: int,
         prompt_start_time: int,
         prompt_end_time: int,
-        sample_settings: SampleSettings
+        sample_settings: SampleSettings,
     ) -> torch.Tensor:
 
         if sample_settings.guidance_scale_seg0 is None:
@@ -384,17 +324,14 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
         run_n_segments = min(run_n_segments, len(lyrics))
 
         # Cache for the whole output sequence
-        cache = ExLlamaV2Cache(self.model, batch_size = bsz, max_seq_len = self.cache_size)
+        cache = ExLlamaV2Cache(self.model, batch_size=bsz, max_seq_len=self.cache_size)
 
         # Collect output here
-        seq = torch.empty((bsz, 0), dtype = torch.long)
+        seq = torch.empty((bsz, 0), dtype=torch.long)
 
         # Sample settings
         gen_settings = ExLlamaV2Sampler.Settings(
-            top_k = 0,
-            top_p = sample_settings.top_p,
-            token_repetition_penalty = sample_settings.repetition_penalty,
-            temperature = sample_settings.temperature,
+            top_k=0, top_p=sample_settings.top_p, token_repetition_penalty=sample_settings.repetition_penalty, temperature=sample_settings.temperature
         )
         gen_settings.disallow_tokens(self.tokenizer, list(range(0, 32002)) + [32016])
 
@@ -414,33 +351,25 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
                     use_audio_prompt,
                     audio_prompt_path,
                     prompt_start_time,
-                    prompt_end_time
+                    prompt_end_time,
                 )
             else:
-                prompt_ids = self.get_segment_prompt(
-                    prompt_texts[i + 1],
-                )
-            prompt_ids = torch.tensor([prompt_ids] * bsz, dtype = torch.long)
+                prompt_ids = self.get_segment_prompt(prompt_texts[i + 1])
+            prompt_ids = torch.tensor([prompt_ids] * bsz, dtype=torch.long)
 
             # Accept prompt tokens
-            seq = torch.cat((seq, prompt_ids), dim = -1)
+            seq = torch.cat((seq, prompt_ids), dim=-1)
 
             # For the unconditional context, mask out all but the last token
             if cfg:
                 mask_len = seq.shape[-1] - 1
-                full_mask = torch.zeros((2, cache.max_seq_len), dtype = torch.half, device = self.device)
-                full_mask[1, :mask_len] = -65504.
-                position_offsets = torch.tensor([[0], [-mask_len]], dtype = torch.int)
-                input_mask = full_mask[:, :seq.shape[-1]]
+                full_mask = torch.zeros((2, cache.max_seq_len), dtype=torch.half, device=self.device)
+                full_mask[1, :mask_len] = -65504.0
+                position_offsets = torch.tensor([[0], [-mask_len]], dtype=torch.int)
+                input_mask = full_mask[:, : seq.shape[-1]]
 
             # Forward prompt
-            logits = self.model.forward(
-                prompt_ids[:, :],
-                cache = cache,
-                input_mask = input_mask,
-                position_offsets = position_offsets,
-                last_id_only = True
-            )
+            logits = self.model.forward(prompt_ids[:, :], cache=cache, input_mask=input_mask, position_offsets=position_offsets, last_id_only=True)
 
             # Generate until EOS or max_new_tokens
             for new_tokens in tqdm(range(max_new_tokens)):
@@ -449,7 +378,7 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
                 if cfg:
                     cfg_scale = sample_settings.guidance_scale_seg0 if i == 0 else sample_settings.guidance_scale
                     logits = logits.float()
-                    logits = F.log_softmax(logits, dim = -1)
+                    logits = F.log_softmax(logits, dim=-1)
                     logits = cfg_scale * logits[0] + (1 - cfg_scale) * logits[1]
                     logits = logits.unsqueeze(0)
 
@@ -457,20 +386,15 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
                 logits = logits.float().cpu()
                 sample, _, _, _, _ = ExLlamaV2Sampler.sample(logits, gen_settings, seq[:1], rng.random(), self.tokenizer)
                 if cfg:
-                     sample = torch.cat((sample, sample), dim = 0)
+                    sample = torch.cat((sample, sample), dim=0)
 
                 # Accept token
-                seq = torch.cat((seq, sample), dim = -1)
+                seq = torch.cat((seq, sample), dim=-1)
 
                 # Get next logits (update cache even if sample is EOA and we don't need next logits)
                 if cfg:
-                    input_mask = full_mask[:, :seq.shape[-1]]
-                logits = self.model.forward(
-                    sample,
-                    cache = cache,
-                    input_mask = input_mask,
-                    position_offsets = position_offsets,
-                )
+                    input_mask = full_mask[:, : seq.shape[-1]]
+                logits = self.model.forward(sample, cache=cache, input_mask=input_mask, position_offsets=position_offsets)
 
                 # End on EOA
                 if sample[0].item() == self.mmtokenizer.eoa:
@@ -478,10 +402,10 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
 
             # Make sure sequence ends with EOA if we reached max_new_tokens
             else:
-                sample = torch.tensor([[self.mmtokenizer.eoa]] * bsz, dtype = torch.long)
-                seq = torch.cat((seq, sample), dim = -1)
+                sample = torch.tensor([[self.mmtokenizer.eoa]] * bsz, dtype=torch.long)
+                seq = torch.cat((seq, sample), dim=-1)
                 # Update cache with forced token
-                self.model.forward(sample, cache = cache)
+                self.model.forward(sample, cache=cache)
 
         raw_output = seq[:1, :]
         return raw_output
@@ -492,7 +416,9 @@ def main():
     if args.use_audio_prompt and not args.audio_prompt_path:
         raise FileNotFoundError("Please offer audio prompt filepath using '--audio_prompt_path', when you enable 'use_audio_prompt'!")
     if args.use_dual_tracks_prompt and not args.vocal_track_prompt_path and not args.instrumental_track_prompt_path:
-        raise FileNotFoundError("Please offer dual tracks prompt filepath using '--vocal_track_prompt_path' and '--inst_decoder_path', when you enable '--use_dual_tracks_prompt'!")
+        raise FileNotFoundError(
+            "Please offer dual tracks prompt filepath using '--vocal_track_prompt_path' and '--inst_decoder_path', when you enable '--use_dual_tracks_prompt'!"
+        )
     if args.seed is not None:
         seed_everything(args.seed)
 
@@ -505,44 +431,39 @@ def main():
 
     if args.stage1_use_exl2:
         pipeline = Stage1Pipeline_EXL2(
-            model_path = args.stage1_model,
-            device = device,
-            basic_model_config = args.basic_model_config,
-            resume_path = args.resume_path,
-            cache_size = args.stage1_cache_size,
+            model_path=args.stage1_model,
+            device=device,
+            basic_model_config=args.basic_model_config,
+            resume_path=args.resume_path,
+            cache_size=args.stage1_cache_size,
         )
     else:
         pipeline = Stage1Pipeline_HF(
-            model_path = args.stage1_model,
-            device = device,
-            basic_model_config = args.basic_model_config,
-            resume_path = args.resume_path,
-            cache_size = args.stage1_cache_size,
+            model_path=args.stage1_model,
+            device=device,
+            basic_model_config=args.basic_model_config,
+            resume_path=args.resume_path,
+            cache_size=args.stage1_cache_size,
         )
 
     # Load tokenizer and models
     raw_output = pipeline.generate(
-        use_dual_tracks_prompt = args.use_dual_tracks_prompt,
-        vocal_track_prompt_path = args.vocal_track_prompt_path,
-        instrumental_track_prompt_path = args.instrumental_track_prompt_path,
-        use_audio_prompt = args.use_audio_prompt,
-        audio_prompt_path = args.audio_prompt_path,
-        genres = genres,
-        lyrics = lyrics,
-        run_n_segments = args.run_n_segments,
-        max_new_tokens = args.max_new_tokens,
-        prompt_start_time = args.prompt_start_time,
-        prompt_end_time = args.prompt_end_time,
-        sample_settings = SampleSettings(use_guidance = not args.stage1_no_guidance)
+        use_dual_tracks_prompt=args.use_dual_tracks_prompt,
+        vocal_track_prompt_path=args.vocal_track_prompt_path,
+        instrumental_track_prompt_path=args.instrumental_track_prompt_path,
+        use_audio_prompt=args.use_audio_prompt,
+        audio_prompt_path=args.audio_prompt_path,
+        genres=genres,
+        lyrics=lyrics,
+        run_n_segments=args.run_n_segments,
+        max_new_tokens=args.max_new_tokens,
+        prompt_start_time=args.prompt_start_time,
+        prompt_end_time=args.prompt_end_time,
+        sample_settings=SampleSettings(use_guidance=not args.stage1_no_guidance),
     )
 
     # Save result
-    pipeline.save(
-        raw_output,
-        args.output_dir,
-        args.use_audio_prompt,
-        args.use_dual_tracks_prompt,
-    )
+    pipeline.save(raw_output, args.output_dir, args.use_audio_prompt, args.use_dual_tracks_prompt)
 
 
 if __name__ == "__main__":
