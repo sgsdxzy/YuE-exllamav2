@@ -3,7 +3,7 @@
 Optimized implementation of [multimodal-art-projection/YuE](https://github.com/multimodal-art-projection/YuE) in exllamav2.
 
 ## Benchmark
-Inference time on RTX 4090:
+### Inference time on RTX 4090 24gb:
 - bf16 model, Flash Attention 2 enabled, CFG enabled
 - default example prompt for genre and lyrics
 - 2 segments in length
@@ -17,7 +17,23 @@ Inference time on RTX 4090:
 
 On this hardware configuration, this implmentation achieves over 500% end-to-end speedup over baseline. There may be some variance in results due to track length variability between generations, although during this test there was only a 3 second difference in track length (0:58 vs 0:55).
 
-[Quantized model](https://huggingface.co/Doctor-Shotgun/YuE-s1-7B-anneal-en-cot-exl2) is available for inference with lower VRAM usage.
+### Inference time on RTX 3060 mobile 6gb:
+
+Quantized models are available for inference with lower VRAM usage: [Stage 1](https://huggingface.co/Doctor-Shotgun/YuE-s1-7B-anneal-en-cot-exl2) [Stage 2](https://huggingface.co/Doctor-Shotgun/YuE-s2-1B-general-exl2)
+
+- 4.25bpw-h6 stage 1 with Q4 cache
+- 8.0bpw-h8 stage 2 with Q8 cache
+- Flash Attention 2 enabled, CFG enabled
+- default example prompt for genre and lyrics
+- 2 segments in length
+
+| Stage  | Original           | Exllamav2          |
+| ------ | ------------------ | ------------------ |
+|    1   |        OOM         |        317s        |
+|    2   |        OOM         |        350s        |
+| Total  |        OOM         |        667s        |
+
+This produces a coherent result despite aggressive quantization, although there are no metrics for now to measure quality loss.
 
 ## Usage
 
