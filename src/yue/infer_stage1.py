@@ -8,9 +8,9 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 from codecmanipulator import CodecManipulator
-from common import BlockTokenRangeProcessor, parser, seed_everything
+from common import BlockTokenRangeProcessor, parser, seed_everything, get_cache_class
 from einops import rearrange
-from exllamav2 import ExLlamaV2, ExLlamaV2Cache, ExLlamaV2Config, ExLlamaV2Tokenizer
+from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Tokenizer
 from exllamav2.generator import ExLlamaV2Sampler
 from mmtokenizer import _MMSentencePieceTokenizer
 from models.soundstream_hubert_new import SoundStream
@@ -275,7 +275,7 @@ class Stage1Pipeline_HF(Stage1Pipeline):
 
 class Stage1Pipeline_EXL2(Stage1Pipeline):
 
-    def __init__(self, model_path: str, device: torch.device, cache_size: int, **kwargs):
+    def __init__(self, model_path: str, device: torch.device, cache_size: int, cache_mode: str, **kwargs):
         super().__init__(device, **kwargs)
 
         assert device != "cpu", "ExLlamaV2 does not support CPU inference."
@@ -291,7 +291,10 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
 
         # Load tokenizer (only needed for vocab size in disallow_tokens)
         self.tokenizer = ExLlamaV2Tokenizer(exl2_config)
+
+        # Define cache
         self.cache_size = cache_size
+        self.cache_mode = get_cache_class(cache_mode)
 
         # TODO: Output layer could be trimmed here to avoid masking out the first 32k tokens during generation
 
@@ -324,7 +327,7 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
         run_n_segments = min(run_n_segments, len(lyrics))
 
         # Cache for the whole output sequence
-        cache = ExLlamaV2Cache(self.model, batch_size=bsz, max_seq_len=self.cache_size)
+        cache = self.cache_mode(self.model, batch_size=bsz, max_seq_len=self.cache_size)
 
         # Collect output here
         seq = torch.empty((bsz, 0), dtype=torch.long)
@@ -448,6 +451,7 @@ def main():
             basic_model_config=args.basic_model_config,
             resume_path=args.resume_path,
             cache_size=args.stage1_cache_size,
+            cache_mode=args.stage1_cache_mode,
         )
     else:
         pipeline = Stage1Pipeline_HF(
