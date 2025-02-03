@@ -162,5 +162,4 @@ cython_debug/
 #.idea/
 
 output
-inference/xcodec_mini_infer
-inference/run_infer.sh
+src/yue/xcodec_mini_infer
