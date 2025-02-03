@@ -83,7 +83,7 @@ class Stage1Pipeline:
 
     def get_prompt_texts(self, genres: str, lyrics: str):
         def split_lyrics(lyrics):
-            pattern = r"\[(\w+)\](.*?)\n(?=\[|\Z)"
+            pattern = r"\[(\w+)\](.*?)(?=\[|\Z)"
             segments = re.findall(pattern, lyrics, re.DOTALL)
             structured_lyrics = [f"[{seg[0]}]\n{seg[1].strip()}\n\n" for seg in segments]
             return structured_lyrics
@@ -214,14 +214,14 @@ class Stage1Pipeline_HF(Stage1Pipeline):
     ) -> torch.Tensor:
 
         lyrics, prompt_texts = self.get_prompt_texts(genres, lyrics)
-        run_n_segments = min(run_n_segments, len(lyrics)) + 1
+        run_n_segments = min(run_n_segments, len(lyrics))
 
-        for i, p in enumerate(tqdm(prompt_texts[1:run_n_segments])):
+        for i in tqdm(range(run_n_segments)):
 
             # Get prompt
             if i == 0:
                 prompt_ids = self.get_first_segment_prompt(
-                    p,
+                    prompt_texts[1],
                     prompt_texts[0],
                     use_dual_tracks_prompt,
                     vocal_track_prompt_path,
@@ -232,7 +232,7 @@ class Stage1Pipeline_HF(Stage1Pipeline):
                     prompt_end_time,
                 )
             else:
-                prompt_ids = self.get_segment_prompt(p)
+                prompt_ids = self.get_segment_prompt(prompt_texts[i + 1])
             prompt_ids = torch.as_tensor(prompt_ids).unsqueeze(0).to(self.device)
             input_ids = torch.cat([raw_output, prompt_ids], dim=1) if i > 0 else prompt_ids
 
@@ -324,7 +324,7 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
             cfg = True
 
         lyrics, prompt_texts = self.get_prompt_texts(genres, lyrics)
-        run_n_segments = min(run_n_segments, len(lyrics)) + 1
+        run_n_segments = min(run_n_segments, len(lyrics))
 
         # Cache for the whole output sequence
         cache = self.cache_mode(self.model, batch_size=bsz, max_seq_len=self.cache_size)
