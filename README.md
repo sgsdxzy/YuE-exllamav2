@@ -3,13 +3,21 @@
 Optimized implementation of [multimodal-art-projection/YuE](https://github.com/multimodal-art-projection/YuE) in exllamav2.
 
 ## Benchmark
-Speed on 2080ti-22GB using the original bf16 model:
+Inference time on RTX 4090:
+- bf16 model, Flash Attention 2 enabled, CFG enabled
+- default example prompt for genre and lyrics
+- 2 segments in length
+- default batch size 4 was used during stage 2 inference with the original pipeline, and cache size was set to 64k for exllamav2
 
-| Stage  | Original Stage1 | Original Stage2 | Exllamav2 Stage1 | Exllamav2 Stage2 |
-| ------ | --------------- | --------------- | ---------------- | ---------------- |
-|  s/it  |       300       |       600       |        90        |        50        |
+| Stage  | Original           | Exllamav2          |
+| ------ | ------------------ | ------------------ |
+|    1   |        282s        |        125s        |
+|    2   |        666s        |         49s        |
+| Total  |        948s        |        174s        |
 
-And you can use [quantized model](https://huggingface.co/Doctor-Shotgun/YuE-s1-7B-anneal-en-cot-exl2) to reduce vram usage.
+On this hardware configuration, this implmentation achieves over 500% end-to-end speedup over baseline. There may be some variance in results due to track length variability between generations, although during this test there was only a 3 second difference in track length (0:58 vs 0:55).
+
+[Quantized model](https://huggingface.co/Doctor-Shotgun/YuE-s1-7B-anneal-en-cot-exl2) is available for inference with lower VRAM usage.
 
 ## Usage
 
