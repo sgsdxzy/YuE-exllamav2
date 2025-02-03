@@ -26,7 +26,7 @@ class SampleSettings:
     # Here is suggested decoding config
     top_p = 0.93
     temperature = 1
-    repetition_penalty = 1.2
+    repetition_penalty = 1.0
     guidance_scale_seg0 = 1.5  # None to disable cfg
     guidance_scale = 1.2  # None to disable cfg
 

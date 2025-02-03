@@ -105,11 +105,12 @@ YuE is a groundbreaking series of open-source foundation models designed for mus
 
 ---
 ## TODOs📋
-- [ ] Support gradio interface. https://github.com/multimodal-art-projection/YuE/issues/1
-- [ ] Support transformers tensor parallel. https://github.com/multimodal-art-projection/YuE/issues/7
-- [ ] Online serving on huggingface space.
 - [ ] Example finetune code for enabling BPM control using 🤗 Transformers.
 - [ ] Support stemgen mode https://github.com/multimodal-art-projection/YuE/issues/21
+- [ ] Support llama.cpp https://github.com/ggerganov/llama.cpp/issues/11467
+- [ ] Support gradio interface. https://github.com/multimodal-art-projection/YuE/issues/1
+- [ ] Online serving on huggingface space.
+- [ ] Support transformers tensor parallel. https://github.com/multimodal-art-projection/YuE/issues/7
 - [x] Support dual-track ICL mode.
 - [x] Fix "instrumental" naming bug in output files. https://github.com/multimodal-art-projection/YuE/pull/26
 - [x] Support seeding https://github.com/multimodal-art-projection/YuE/issues/20
@@ -121,7 +122,7 @@ YuE is a groundbreaking series of open-source foundation models designed for mus
 ### **GPU Memory**
 YuE requires significant GPU memory for generating long sequences. Below are the recommended configurations:
 
-- **For GPUs with 24GB memory or less**: Run **up to 2 sessions** concurrently to avoid out-of-memory (OOM) errors.
+- **For GPUs with 24GB memory or less**: Run **up to 2 sessions** concurrently to avoid out-of-memory (OOM) errors. You could try this [YuEGP](https://github.com/deepbeepmeep/YuEGP) to see if it helps reduce VRAM usage or improve speed.
 - **For full song generation** (many sessions, e.g., 4 or more): Use **GPUs with at least 80GB memory**. i.e. H800, A100, or multiple RTX4090s with tensor parallel.
 
 To customize the number of sessions, the interface allows you to specify the desired session count. By default, the model runs **2 sessions** (1 verse + 1 chorus) to avoid OOM issue.
