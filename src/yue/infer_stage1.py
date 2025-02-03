@@ -324,7 +324,7 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
             cfg = True
 
         lyrics, prompt_texts = self.get_prompt_texts(genres, lyrics)
-        run_n_segments = min(run_n_segments, len(lyrics))
+        run_n_segments = min(run_n_segments + 1, len(lyrics))
 
         # Cache for the whole output sequence
         cache = self.cache_mode(self.model, batch_size=bsz, max_seq_len=self.cache_size)
