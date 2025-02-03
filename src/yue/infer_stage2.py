@@ -6,8 +6,8 @@ from collections import Counter
 import numpy as np
 import torch
 from codecmanipulator import CodecManipulator
-from common import BlockTokenRangeProcessor, parser, seed_everything
-from exllamav2 import ExLlamaV2, ExLlamaV2Cache, ExLlamaV2Config, ExLlamaV2Tokenizer
+from common import BlockTokenRangeProcessor, parser, seed_everything, get_cache_class
+from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Tokenizer
 from mmtokenizer import _MMSentencePieceTokenizer
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, LogitsProcessorList
@@ -205,7 +205,7 @@ class Stage2Pipeline_HF(Stage2Pipeline):
 
 class Stage2Pipeline_EXL2(Stage2Pipeline):
 
-    def __init__(self, model_path: str, device: torch.device, cache_size: int):
+    def __init__(self, model_path: str, device: torch.device, cache_size: int, cache_mode: str):
         super().__init__(device)
 
         self.cache_size = cache_size
@@ -226,6 +226,9 @@ class Stage2Pipeline_EXL2(Stage2Pipeline):
 
         # Load tokenizer (only needed for vocab size in disallow_tokens)
         self.tokenizer = ExLlamaV2Tokenizer(exl2_config)
+
+        # Define cache
+        self.cache_mode = get_cache_class(cache_mode)
 
     def generate(self, output_dir: str) -> dict[str, np.array]:
 
@@ -282,7 +285,7 @@ class Stage2Pipeline_EXL2(Stage2Pipeline):
             prompt_ids = prompt_ids.to(self.device)
             batch_size, len_prompt = prompt_ids.shape
 
-            cache = ExLlamaV2Cache(self.model, batch_size=batch_size, max_seq_len=align(prompt_ids.shape[1] + codec_ids.shape[1] * 8, 32))
+            cache = self.cache_mode(self.model, batch_size=batch_size, max_seq_len=align(prompt_ids.shape[1] + codec_ids.shape[1] * 8, 32))
             output_ids = torch.empty((batch_size, 0), dtype=torch.long, device=self.device)
 
             for frames_idx in tqdm(range(codec_ids.shape[1])):
@@ -339,7 +342,7 @@ def main():
     device = torch.device(f"cuda:{args.cuda_idx}" if torch.cuda.is_available() else "cpu")
 
     if args.stage2_use_exl2:
-        pipeline = Stage2Pipeline_EXL2(model_path=args.stage2_model, device=device, cache_size=args.stage2_cache_size)
+        pipeline = Stage2Pipeline_EXL2(model_path=args.stage2_model, device=device, cache_size=args.stage2_cache_size, cache_mode=args.stage2_cache_mode)
         pass
     else:
         pipeline = Stage2Pipeline_HF(model_path=args.stage2_model, device=device, batch_size=args.stage2_batch_size)

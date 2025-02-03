@@ -1,5 +1,11 @@
 import argparse
 
+from exllamav2 import (
+    ExLlamaV2Cache,
+    ExLlamaV2Cache_Q4,
+    ExLlamaV2Cache_Q6,
+    ExLlamaV2Cache_Q8,
+)
 from transformers import LogitsProcessor
 import torch
 import random
@@ -16,6 +22,8 @@ parser.add_argument("--stage2_use_exl2", action="store_true", help="Use exllamav
 parser.add_argument("--stage2_batch_size", type=int, default=4, help="The non-exl2 batch size used in Stage 2 inference.")
 parser.add_argument("--stage1_cache_size", type=int, default=16384, help="The cache size used in Stage 1 inference.")
 parser.add_argument("--stage2_cache_size", type=int, default=8192, help="The exl2 cache size used in Stage 2 inference.")
+parser.add_argument("--stage1_cache_mode", type=str, default="FP16", help="The cache mode used in Stage 1 inference (FP16, Q8, Q6, Q4). Quantized k/v cache will save VRAM at the cost of some speed and precision.")
+parser.add_argument("--stage2_cache_mode", type=str, default="FP16", help="The cache mode used in Stage 2 inference (FP16, Q8, Q6, Q4). Quantized k/v cache will save VRAM at the cost of some speed and precision.")
 parser.add_argument("--stage1_no_guidance", action="store_true", help="Disable classifier-free guidance for stage 1")
 # Prompt
 parser.add_argument(
@@ -79,6 +87,18 @@ def seed_everything(seed: int = 42):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def get_cache_class(cache_mode: str):
+    match cache_mode:
+        case "Q4":
+            return ExLlamaV2Cache_Q4
+        case "Q6":
+            return ExLlamaV2Cache_Q6
+        case "Q8":
+            return ExLlamaV2Cache_Q8
+        case _:
+            return ExLlamaV2Cache
 
 
 class BlockTokenRangeProcessor(LogitsProcessor):
