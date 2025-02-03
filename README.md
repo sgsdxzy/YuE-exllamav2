@@ -36,8 +36,9 @@ sudo apt install git-lfs
 git lfs install
 git clone https://github.com/sgsdxzy/YuE-exllamav2.git
 cd YuE-exllamav2
-git clone https://huggingface.co/m-a-p/xcodec_mini_infer
 pip install -r requirements.txt
+cd src/yue
+git clone https://huggingface.co/m-a-p/xcodec_mini_infer
 ```
 
 ### 3. Run the inference
