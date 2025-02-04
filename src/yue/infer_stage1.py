@@ -196,7 +196,7 @@ class Stage1Pipeline:
             assert match_indices.numel() > 1, f"Unable to shorten input sequence to fit context length {max_context}; there are no segments to drop."
             first_segment_start = match_indices[0].item()
             second_segment_start = match_indices[1].item()
-            seq = torch.cat((seq[:, :first_segment_start], seq[:, second_segment_start:]))       
+            seq = torch.cat((seq[:, :first_segment_start], seq[:, second_segment_start:]))
         return seq
 
 
