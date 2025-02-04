@@ -185,7 +185,6 @@ class Stage1Pipeline:
         np.save(inst_save_path, instrumentals)
 
     def shorten_input(self, seq: torch.Tensor, max_context: int):
-        
         # Iteratively drop the oldest segment in the context until the sequence fits in context
         pattern = torch.tensor(self.start_of_segment)
         pattern_length = pattern.numel()
@@ -196,7 +195,7 @@ class Stage1Pipeline:
             assert match_indices.numel() > 1, f"Unable to shorten input sequence to fit context length {max_context}; there are no segments to drop."
             first_segment_start = match_indices[0].item()
             second_segment_start = match_indices[1].item()
-            seq = torch.cat((seq[:, :first_segment_start], seq[:, second_segment_start:]))
+            seq = torch.cat((seq[:, :first_segment_start], seq[:, second_segment_start:]), dim=1)
         return seq
 
 
