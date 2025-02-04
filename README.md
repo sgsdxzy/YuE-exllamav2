@@ -50,6 +50,15 @@ conda activate yue
 # Note installing from pypi uses JIT version and requires nvcc+compiler
 pip install exllamav2
 ```
+Alternatively, if you don't wish to use JIT compilation, navigate to the [exllamav2 releases page](https://github.com/turboderp-org/exllamav2/releases) and find the appropriate wheel for your python version, torch version, and CUDA version.
+
+### 1.2 (Optional) Install Flash Attention 2 for improved performance on Ampere+ GPUs
+```bash
+# Refer to https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#installation-and-features
+pip install flash-attn
+```
+Precompiled wheels for Linux are available on the [releases page](https://github.com/Dao-AILab/flash-attention/releases). Precompiled wheels for Windows are available from [kingbri's fork](https://github.com/bdashore3/flash-attention/releases).
+
 
 ### 2. Download the infer code and tokenizer
 ```bash
