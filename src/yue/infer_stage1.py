@@ -336,7 +336,7 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
         gen_settings = ExLlamaV2Sampler.Settings(
             top_k=0, top_p=sample_settings.top_p, token_repetition_penalty=sample_settings.repetition_penalty, temperature=sample_settings.temperature
         )
-        gen_settings.disallow_tokens(self.tokenizer, list(range(0, 32002)) + [32016])
+        gen_settings.allow_tokens(self.tokenizer, [32002] + list(range(45334, 56722)))
 
         # RNG for sampling, could seed here
         rng = random.Random()
