@@ -12,6 +12,7 @@ from mmtokenizer import _MMSentencePieceTokenizer
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, LogitsProcessorList
 from transformers.cache_utils import StaticCache
+import gc
 
 
 def align(n, m):
@@ -321,6 +322,11 @@ class Stage2Pipeline_EXL2(Stage2Pipeline):
             # Split outputs
             for i in range(batch_size):
                 output_parts[part_order[i]].append((seg_order[i], output_ids[i : i + 1, :]))
+
+            # Release cache tensors
+            del cache
+            torch.cuda.empty_cache()
+            gc.collect()
 
         # Unshuffle and recombine output parts
         output = {}
