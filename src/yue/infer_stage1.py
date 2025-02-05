@@ -192,7 +192,10 @@ class Stage1Pipeline:
             windows = seq[0].unfold(0, pattern_length, 1)
             matches = (windows == pattern).all(dim=1)
             match_indices = torch.nonzero(matches).flatten()
-            assert match_indices.numel() > 1, f"Unable to shorten input sequence to fit context length {max_context}; there are no segments to drop."
+            if match_indices.numel() < 3:
+                # Ensure that at least one other segment remains before the current segment for continuity
+                print("Unable to keep enough segments for smart context, falling back to simple truncation. " f"Now using the last {max_context} tokens.")
+                return seq[:, -max_context:]
             first_segment_start = match_indices[0].item()
             second_segment_start = match_indices[1].item()
             seq = torch.cat((seq[:, :first_segment_start], seq[:, second_segment_start:]), dim=-1)
