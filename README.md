@@ -37,30 +37,30 @@ This produces a coherent result despite aggressive quantization, although there 
 
 ## Usage
 
-### 1. Install environment and dependencies
+### 1. Prerequisites
+- Git
+- Conda or Python 3.10+ with pip
+
+### 2. Setup environment
+We recommend using conda to create a new environment:
 ```bash
-# We recommend using conda to create a new environment.
-conda create -n yue python=3.12 # Python >=3.12 is recommended.
+conda create -n yue python=3.12 # 3.12 >= Python >= 3.10 is recommended.
 conda activate yue
 ```
-
-### 1.1 Install exllamav2
+Or alternatively, you can create a native Python virtualenv:
 ```bash
-# Refer to https://github.com/turboderp-org/exllamav2?tab=readme-ov-file#installation
-# Note installing from pypi uses JIT version and requires nvcc+compiler
-pip install exllamav2
+# You can create a Python virtualenv
+python -m venv venv
+
+# Linux
+source ./venv/bin/activate
+# Windows Powershell
+./venv/scripts/activate
+# Windows cmd
+call ./venv/scripts/activate
 ```
-Alternatively, if you don't wish to use JIT compilation, navigate to the [exllamav2 releases page](https://github.com/turboderp-org/exllamav2/releases) and find the appropriate wheel for your python version, torch version, and CUDA version.
 
-### 1.2 (Optional) Install Flash Attention 2 for improved performance on Ampere+ GPUs
-```bash
-# Refer to https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#installation-and-features
-pip install flash-attn
-```
-Precompiled wheels for Linux are available on the [releases page](https://github.com/Dao-AILab/flash-attention/releases). Precompiled wheels for Windows are available from [kingbri's fork](https://github.com/bdashore3/flash-attention/releases).
-
-
-### 2. Download the infer code and tokenizer
+### 3. Download the inference code and codec model
 ```bash
 # Make sure you have git-lfs installed (https://git-lfs.com)
 # if you don't have root, see https://github.com/git-lfs/git-lfs/issues/4134#issuecomment-1635204943
@@ -73,7 +73,7 @@ git clone https://huggingface.co/m-a-p/xcodec_mini_infer
 pip install -r requirements.txt
 ```
 
-### 3. Run the inference
+### 4. Run inference via CLI
 ```bash
 python src/yue/infer.py --stage1_use_exl2 --stage2_use_exl2 --stage2_cache_size 32768 [original args]
 ```
