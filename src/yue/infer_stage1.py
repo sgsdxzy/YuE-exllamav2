@@ -184,6 +184,23 @@ class Stage1Pipeline:
         np.save(vocal_save_path, vocals)
         np.save(inst_save_path, instrumentals)
 
+    def shorten_input(self, seq: torch.Tensor, max_context: int):
+        # Iteratively drop the oldest segment in the context until the sequence fits in context
+        pattern = torch.tensor(self.start_of_segment)
+        pattern_length = pattern.numel()
+        while seq.shape[-1] > max_context:
+            windows = seq[0].unfold(0, pattern_length, 1)
+            matches = (windows == pattern).all(dim=1)
+            match_indices = torch.nonzero(matches).flatten()
+            if match_indices.numel() < 3:
+                # Ensure that at least one other segment remains before the current segment for continuity
+                print("Unable to keep enough segments for smart context, falling back to simple truncation. " f"Now using the last {max_context} tokens.")
+                return seq[:, -max_context:]
+            first_segment_start = match_indices[0].item()
+            second_segment_start = match_indices[1].item()
+            seq = torch.cat((seq[:, :first_segment_start], seq[:, second_segment_start:]), dim=-1)
+        return seq
+
 
 class Stage1Pipeline_HF(Stage1Pipeline):
 
@@ -239,8 +256,8 @@ class Stage1Pipeline_HF(Stage1Pipeline):
             # Use window slicing in case output sequence exceeds the context of model
             max_context = self.cache_size - max_new_tokens - 1
             if input_ids.shape[-1] > max_context:
-                print(f"Section {i}: output length {input_ids.shape[-1]} exceeding context length {max_context}, " f"now using the last {max_context} tokens.")
-                input_ids = input_ids[:, -max_context:]
+                print(f"Section {i}: output length {input_ids.shape[-1]} exceeding context length {max_context}, " f"dropping early segment(s) from prompt.")
+                input_ids = self.shorten_input(input_ids, max_context)
 
             past_key_values = StaticCache(
                 self.model.config, max_batch_size=1, max_cache_len=input_ids.shape[-1] + max_new_tokens, device=self.model.device, dtype=self.model.dtype
@@ -366,9 +383,9 @@ class Stage1Pipeline_EXL2(Stage1Pipeline):
             # Use window slicing in case output sequence exceeds the context of model
             max_context = self.cache_size - max_new_tokens - 1
             if seq.shape[-1] > max_context:
-                print(f"Section {i}: output length {seq.shape[-1]} exceeding context length {max_context}, " f"now using the last {max_context} tokens.")
+                print(f"Section {i}: output length {seq.shape[-1]} exceeding context length {max_context}, " f"dropping early segment(s) from prompt.")
                 cache.current_seq_len = 0
-                full_ids = seq[:, -max_context:]
+                full_ids = self.shorten_input(seq, max_context)
                 incremental_ids = full_ids
             else:
                 full_ids = seq
