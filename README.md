@@ -38,7 +38,7 @@ This produces a coherent result despite aggressive quantization, although there 
 ## Usage
 
 ### 1. Prerequisites
-- Git
+- Git and Git LFS
 - Conda or Python 3.10+ with pip
 
 ### 2. Setup environment
@@ -64,8 +64,6 @@ call ./venv/scripts/activate
 ```bash
 # Make sure you have git-lfs installed (https://git-lfs.com)
 # if you don't have root, see https://github.com/git-lfs/git-lfs/issues/4134#issuecomment-1635204943
-sudo apt update
-sudo apt install git-lfs
 git lfs install
 git clone https://github.com/sgsdxzy/YuE-exllamav2.git
 cd YuE-exllamav2
