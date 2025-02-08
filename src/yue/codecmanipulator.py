@@ -132,7 +132,8 @@ class CodecManipulator(object):
         return einops.rearrange(x, 'K T -> (T K)')
 
     def unflatten(self, x, n_quantizer=None):
-        x = x.squeeze()
+        if x.ndim > 1 and x.shape[0] == 1:
+            x = x.squeeze(0)
         assert len(x.shape) == 1
         assert x.shape[0] % self.num_codebooks == 0 or x.shape[0] % self.n_quantizer == 0, \
             f"x.shape[0]={x.shape[0]}, num_codebooks={self.num_codebooks}, n_quantizer={self.n_quantizer}"

@@ -26,14 +26,15 @@ class SampleSettings:
     # Here is suggested decoding config
     top_p = 0.93
     temperature = 1
-    repetition_penalty = 1.0
+    repetition_penalty = 1.1
     guidance_scale_seg0 = 1.5  # None to disable cfg
     guidance_scale = 1.2  # None to disable cfg
 
-    def __init__(self, use_guidance: bool = True):
+    def __init__(self, use_guidance: bool = True, repetition_penalty: float = 1.1):
         if not use_guidance:
             self.guidance_scale_seg0 = None
             self.guidance_scale = None
+        self.repetition_penalty = repetition_penalty
 
 
 def load_audio_mono(filepath, sampling_rate=16000):
@@ -492,7 +493,7 @@ def main():
         max_new_tokens=args.max_new_tokens,
         prompt_start_time=args.prompt_start_time,
         prompt_end_time=args.prompt_end_time,
-        sample_settings=SampleSettings(use_guidance=not args.stage1_no_guidance),
+        sample_settings=SampleSettings(use_guidance=not args.stage1_no_guidance, repetition_penalty=args.repetition_penalty),
     )
 
     # Save result

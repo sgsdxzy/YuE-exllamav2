@@ -100,8 +100,10 @@ Our model's name is **YuE (乐)**. In Chinese, the word means "music" and "happi
 YuE is a groundbreaking series of open-source foundation models designed for music generation, specifically for transforming lyrics into full songs (lyrics2song). It can generate a complete song, lasting several minutes, that includes both a catchy vocal track and accompaniment track. YuE is capable of modeling diverse genres/languages/vocal techniques. Please visit the [**Demo Page**](https://map-yue.github.io/) for amazing vocal performance.
 
 ## News and Updates
+* **2025.02.07 🎉** Get YuE for Windows on [pinokio](https://pinokio.computer).
+* **2025.02.06** Join Us on Discord! [![Discord](https://img.shields.io/discord/842440537755353128?color=%237289da&logo=discord)](https://discord.gg/ssAyWMnMzu)
 
-* **2025.01.30 🔥 Inference Update**: We now support dual-track ICL mode! You can prompt the model with a reference song, and it will generate a new song in a similar style (voice cloning, music style transfer, etc.). Try it out! See [demo video by @abrakjamson on X](https://x.com/abrakjamson/status/1885932885406093538). 🔥🔥🔥
+* **2025.01.30 🔥 Inference Update**: We now support dual-track ICL mode! You can prompt the model with a reference song, and it will generate a new song in a similar style (voice cloning [demo by @abrakjamson](https://x.com/abrakjamson/status/1885932885406093538), music style transfer [demo by @cocktailpeanut](https://x.com/cocktailpeanut/status/1886456240156348674), etc.). Try it out! 🔥🔥🔥 P.S. Be sure to check out the demos first—they're truly impressive. 
 
 * **2025.01.30 🔥 Announcement: A New Era Under Apache 2.0 🔥**: We are thrilled to announce that, in response to overwhelming requests from our community, **YuE** is now officially licensed under the **Apache 2.0** license. We sincerely hope this marks a watershed moment—akin to what Stable Diffusion and LLaMA have achieved in their respective fields—for music generation and creative AI. 🎉🎉🎉
 
@@ -113,15 +115,18 @@ YuE is a groundbreaking series of open-source foundation models designed for mus
 
 ---
 ## TODOs📋
+- [ ] Release paper to Arxiv.
 - [ ] Example finetune code for enabling BPM control using 🤗 Transformers.
 - [ ] Support stemgen mode https://github.com/multimodal-art-projection/YuE/issues/21
+- [ ] Support Colab https://github.com/multimodal-art-projection/YuE/issues/50
 - [ ] Support llama.cpp https://github.com/ggerganov/llama.cpp/issues/11467
-- [ ] Support gradio interface. https://github.com/multimodal-art-projection/YuE/issues/1
 - [ ] Online serving on huggingface space.
 - [ ] Support transformers tensor parallel. https://github.com/multimodal-art-projection/YuE/issues/7
+- [x] Support gradio interface. https://github.com/multimodal-art-projection/YuE/issues/1
 - [x] Support dual-track ICL mode.
 - [x] Fix "instrumental" naming bug in output files. https://github.com/multimodal-art-projection/YuE/pull/26
 - [x] Support seeding https://github.com/multimodal-art-projection/YuE/issues/20
+- [x] Allow `--repetition_penalty` to customize repetition penalty. https://github.com/multimodal-art-projection/YuE/issues/45
 
 ---
 
@@ -129,8 +134,7 @@ YuE is a groundbreaking series of open-source foundation models designed for mus
 
 ### **GPU Memory**
 YuE requires significant GPU memory for generating long sequences. Below are the recommended configurations:
-
-- **For GPUs with 24GB memory or less**: Run **up to 2 sessions** concurrently to avoid out-of-memory (OOM) errors. You could try this [YuEGP](https://github.com/deepbeepmeep/YuEGP) to see if it helps reduce VRAM usage or improve speed.
+- **For GPUs with 24GB memory or less**: Run **up to 2 sessions** to avoid out-of-memory (OOM) errors. Thanks to the community, there are [YuE-exllamav2](https://github.com/sgsdxzy/YuE-exllamav2) and [YuEGP](https://github.com/deepbeepmeep/YuEGP) for those with limited GPU resources. While both enhance generation speed and coherence, they may compromise musicality. (P.S. Better prompts & ICL help!)
 - **For full song generation** (many sessions, e.g., 4 or more): Use **GPUs with at least 80GB memory**. i.e. H800, A100, or multiple RTX4090s with tensor parallel.
 
 To customize the number of sessions, the interface allows you to specify the desired session count. By default, the model runs **2 sessions** (1 verse + 1 chorus) to avoid OOM issue.
@@ -141,8 +145,18 @@ On an **RTX 4090 GPU**, generating 30s audio takes approximately **360 seconds**
 
 ---
 
-## Quickstart
-Quick start **VIDEO TUTORIAL** by Fahd: [Link here](https://www.youtube.com/watch?v=RSMNH9GitbA). We recommend watching this video if you are not familiar with machine learning or the command line.
+## 🪟 Windows Users Quickstart
+- For a **one-click installer**, use [Pinokio](https://pinokio.computer).  
+- To use **Gradio with Docker**, see: [YuE-for-Windows](https://github.com/sdbds/YuE-for-windows)
+
+## 🐧 Linux/WSL Users Quickstart
+For a **quick start**, watch this **video tutorial** by Fahd: [Watch here](https://www.youtube.com/watch?v=RSMNH9GitbA).  
+If you're new to **machine learning** or the **command line**, we highly recommend watching this video first.  
+
+To use a **GUI/Gradio** interface, check out:  
+- [YuE-exllamav2-UI](https://github.com/WrongProtocol/YuE-exllamav2-UI)
+- [YuEGP](https://github.com/deepbeepmeep/YuEGP)
+- [YuE-Interface](https://github.com/alisson-anjos/YuE-Interface)  
 
 ### 1. Install environment and dependencies
 Make sure properly install flash attention 2 to reduce VRAM usage. 
@@ -198,7 +212,8 @@ python infer.py \
     --run_n_segments 2 \
     --stage2_batch_size 4 \
     --output_dir ../output \
-    --max_new_tokens 3000
+    --max_new_tokens 3000 \
+    --repetition_penalty 1.1
 ```
 
 We also support music in-context-learning (provide a reference song), there are 2 types: single-track (mix/vocal/instrumental) and dual-track. 
@@ -231,6 +246,7 @@ python infer.py \
     --stage2_batch_size 4 \
     --output_dir ../output \
     --max_new_tokens 3000 \
+    --repetition_penalty 1.1 \
     --use_dual_tracks_prompt \
     --vocal_track_prompt_path ../prompt_egs/pop.00001.Vocals.mp3 \
     --instrumental_track_prompt_path ../prompt_egs/pop.00001.Instrumental.mp3 \
@@ -254,6 +270,7 @@ python infer.py \
     --stage2_batch_size 4 \
     --output_dir ../output \
     --max_new_tokens 3000 \
+    --repetition_penalty 1.1 \
     --use_audio_prompt \
     --audio_prompt_path ../prompt_egs/pop.00001.mp3 \
     --prompt_start_time 0 \
