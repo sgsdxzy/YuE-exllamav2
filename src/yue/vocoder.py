@@ -17,11 +17,11 @@ def build_soundstream_model(config):
     model = eval(config.generator.name)(**config.generator.config)
     return model
 
-def build_codec_model(config_path, vocal_decoder_path, inst_decoder_path):
+def build_codec_model(config_path, vocal_decoder_path, inst_decoder_path, device):
     vocal_decoder = VocosDecoder.from_hparams(config_path=config_path)
-    vocal_decoder.load_state_dict(torch.load(vocal_decoder_path))
+    vocal_decoder.load_state_dict(torch.load(vocal_decoder_path, map_location=device))
     inst_decoder = VocosDecoder.from_hparams(config_path=config_path)
-    inst_decoder.load_state_dict(torch.load(inst_decoder_path))
+    inst_decoder.load_state_dict(torch.load(inst_decoder_path, map_location=device))
     return vocal_decoder, inst_decoder
 
 def save_audio(wav: torch.Tensor, path: tp.Union[Path, str], sample_rate: int, rescale: bool = False):
@@ -107,6 +107,7 @@ def main():
     parser.add_argument('--vocal_decoder_path', type=str, default='/aifs4su/mmcode/codeclm/xcodec_mini_infer_newdecoder/decoders/decoder_131000.pth', help='Path to Vocos decoder weights.')
     parser.add_argument('--inst_decoder_path', type=str, default='/aifs4su/mmcode/codeclm/xcodec_mini_infer_newdecoder/decoders/decoder_151000.pth', help='Path to Vocos decoder weights.')
     parser.add_argument('-r', '--rescale', action='store_true', help='Rescale output to avoid clipping.')
+    parser.add_argument('--device', type=str, default='cuda', help='Device to use for torch.')
     args = parser.parse_args()
 
     # Validate inputs
@@ -126,11 +127,11 @@ def main():
     # Initialize models
     config_ss = OmegaConf.load("./final_ckpt/config.yaml")
     soundstream = build_soundstream_model(config_ss)
-    parameter_dict = torch.load(args.resume_path)
+    parameter_dict = torch.load(args.resume_path, map_location=torch.device(args.device))
     soundstream.load_state_dict(parameter_dict['codec_model'])
     soundstream.eval()
     
-    vocal_decoder, inst_decoder = build_codec_model(args.config_path, args.vocal_decoder_path, args.inst_decoder_path)
+    vocal_decoder, inst_decoder = build_codec_model(args.config_path, args.vocal_decoder_path, args.inst_decoder_path, args.device)
     
     # Find and process matching pairs
     pairs = find_matching_pairs(args.input_folder)

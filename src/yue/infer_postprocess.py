@@ -59,7 +59,7 @@ def post_process(
             print(e)
 
     # vocoder to upsample audios
-    vocal_decoder, inst_decoder = build_codec_model(config_path, vocal_decoder_path, inst_decoder_path)
+    vocal_decoder, inst_decoder = build_codec_model(config_path, vocal_decoder_path, inst_decoder_path, device)
     vocoder_output_dir = os.path.join(output_dir, "vocoder")
     vocoder_stems_dir = os.path.join(vocoder_output_dir, "stems")
     vocoder_mix_dir = os.path.join(vocoder_output_dir, "mix")
